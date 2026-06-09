@@ -1,13 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, X, FileText, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Check, X, FileText, ShieldCheck, UploadCloud } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { REQUESTS } from '../../data/mockData';
 import { OnChainReference } from '../../components/common/OnChainReference';
 import { toast } from 'sonner';
 import { useAccount } from 'wagmi';
 import { keccak256, toBytes } from 'viem';
-import { useIssueTranscript } from '../../web3/useTranscript';
+import { useIssueTranscript, hashFile } from '../../web3/useTranscript';
+import { uploadToIPFS, isPinataConfigured } from '../../lib/pinata';
+import { updateRequestStatus } from '../../lib/db';
 
 export function RequestReview() {
   const { id } = useParams();
@@ -17,17 +19,33 @@ export function RequestReview() {
   const [issueStep, setIssueStep] = useState(0);
   const [showSuccess, setShowSuccess] = useState(false);
   const [docHash, setDocHash] = useState<`0x${string}`>('0x');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [ipfsCid, setIpfsCid] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { issue, isPending, isSuccess, txHash, error } = useIssueTranscript();
 
-  // Deterministic hash from request ID + student ID (simulates hashing the real doc)
+  // Default hash from request metadata (used when no file uploaded)
   useEffect(() => {
     const hash = keccak256(toBytes(`${request.id}:${request.student.studentId}:${request.program}`));
     setDocHash(hash);
   }, [request]);
 
+  // When a file is selected, compute its real SHA-256 hash
+  useEffect(() => {
+    if (!uploadedFile) return;
+    hashFile(uploadedFile).then(setDocHash);
+  }, [uploadedFile]);
+
   useEffect(() => {
     if (isSuccess) {
+      // Update off-chain status
+      updateRequestStatus(request.id, 'Anchored', {
+        tx_hash: txHash,
+        document_hash: docHash,
+        ipfs_cid: ipfsCid,
+        issue_date: new Date().toISOString(),
+      });
       setIssueStep(0);
       setShowSuccess(true);
     }
@@ -40,15 +58,29 @@ export function RequestReview() {
     }
   }, [error]);
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (!isConnected) {
       toast.error('Connect your wallet first');
       return;
     }
     setIssueStep(1);
-    // recipient address defaults to deployer for demo (in prod: destUni wallet)
+    let finalHash = docHash;
+
+    // If a file was uploaded and Pinata is configured, upload to IPFS first
+    if (uploadedFile && isPinataConfigured) {
+      try {
+        setIssueStep(2);
+        const { cid } = await uploadToIPFS(uploadedFile);
+        setIpfsCid(cid);
+        toast.success('Document uploaded to IPFS', { description: `CID: ${cid.slice(0, 16)}...` });
+      } catch {
+        toast.error('IPFS upload failed — anchoring hash only');
+      }
+    }
+
+    setIssueStep(3);
     const recipient = request.destUni.address as `0x${string}`;
-    issue(docHash, recipient, request.student.studentId, request.program);
+    issue(finalHash, recipient, request.student.studentId, request.program);
   };
   const handleReject = () => {
     toast.error('Request Rejected', {

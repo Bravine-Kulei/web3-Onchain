@@ -4,8 +4,6 @@ import {
   ShieldCheck,
   ArrowRight,
   CheckCircle2,
-  Lock,
-  Zap,
   FileText,
   Link as LinkIcon,
   Building2 } from
@@ -13,9 +11,14 @@ import {
 import { useRole, Role } from '../context/RoleContext';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
+import { useAccount, useConnect, useDisconnect } from 'wagmi';
 export function Landing() {
   const navigate = useNavigate();
   const { setRole } = useRole();
+  const { address, isConnected } = useAccount();
+  const { connect, connectors } = useConnect();
+  const { disconnect } = useDisconnect();
+
   const handleDemoLogin = (role: Role) => {
     setRole(role);
     switch (role) {
@@ -53,10 +56,9 @@ export function Landing() {
             About Consortium
           </button>
           <button
-            onClick={() => handleComingSoon('Wallet connection')}
+            onClick={() => isConnected ? disconnect() : connect({ connector: connectors[0] })}
             className="px-5 py-2.5 bg-blue-50 text-blue-700 rounded-lg font-medium hover:bg-blue-100 transition-colors active:scale-95">
-            
-            Connect Wallet
+            {isConnected ? `${address?.slice(0,6)}...${address?.slice(-4)}` : 'Connect Wallet'}
           </button>
         </div>
       </header>

@@ -14,12 +14,12 @@ web3-Onchain/
 
 ### 1. Run Local Blockchain + Deploy Contracts
 
-```bash
+```powershell
 cd contracts
-cp .env.example .env
+copy .env.example .env
 npx hardhat node                           # starts local chain on :8545
-# In a new terminal:
-SEED=true npx hardhat run scripts/deploy.ts --network localhost
+# In a new terminal (PowerShell):
+$env:SEED="true"; npx hardhat run scripts/deploy.ts --network localhost
 ```
 
 This deploys both contracts and writes addresses to `frontend/src/contracts/addresses.json`.
