@@ -1,0 +1,8 @@
+node_modules/
+dist/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+contracts/.env
+frontend/.env
+*.local
