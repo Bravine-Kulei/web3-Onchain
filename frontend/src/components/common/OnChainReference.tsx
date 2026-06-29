@@ -1,6 +1,13 @@
 import React from 'react';
 import { Copy, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
+import { useChainId } from 'wagmi';
+
+// Block explorers per chain. Local Hardhat (31337) has none.
+const EXPLORERS: Record<number, string> = {
+  80002: 'https://amoy.polygonscan.com/tx/',
+};
+
 interface OnChainReferenceProps {
   txHash: string;
   blockNumber?: number;
@@ -11,6 +18,8 @@ export function OnChainReference({
   blockNumber,
   className = ''
 }: OnChainReferenceProps) {
+  const chainId = useChainId();
+  const explorerBase = EXPLORERS[chainId];
   const truncateHash = (hash: string) => {
     if (!hash || hash.length < 12) return hash;
     return `${hash.slice(0, 6)}...${hash.slice(-4)}`;
@@ -39,13 +48,18 @@ export function OnChainReference({
           Block {blockNumber.toLocaleString()}
         </span>
       }
-      <a
-        href="#"
-        className="flex items-center gap-1 text-blue-600 hover:text-blue-800 transition-colors ml-auto sm:ml-0">
-        
-        <span>View on explorer</span>
-        <ExternalLink className="w-3.5 h-3.5" />
-      </a>
+      {explorerBase ? (
+        <a
+          href={`${explorerBase}${txHash}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 text-blue-600 hover:text-blue-800 transition-colors ml-auto sm:ml-0">
+          <span>View on explorer</span>
+          <ExternalLink className="w-3.5 h-3.5" />
+        </a>
+      ) : (
+        <span className="text-xs text-slate-400 ml-auto sm:ml-0">Local chain</span>
+      )}
     </div>);
 
 }

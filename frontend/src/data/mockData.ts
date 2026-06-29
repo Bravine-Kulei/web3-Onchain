@@ -1,10 +1,13 @@
+// Addresses match the seeded Hardhat accounts (#1-#4) registered on-chain by
+// contracts/scripts/deploy.ts, so issuer/recipient addresses are consistent
+// between the UI and the chain during the local demo.
 export const UNIVERSITIES = [
 {
   id: 'u1',
   name: 'Kabarak University',
   type: 'Private',
   role: 'Both',
-  address: '0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
+  address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
   joined: '2023-01-15',
   status: 'Online'
 },
@@ -13,7 +16,7 @@ export const UNIVERSITIES = [
   name: 'Laikipia University',
   type: 'Public',
   role: 'Both',
-  address: '0x2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c',
+  address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
   joined: '2023-02-20',
   status: 'Online'
 },
@@ -22,7 +25,7 @@ export const UNIVERSITIES = [
   name: 'Mount Kenya University',
   type: 'Private',
   role: 'Both',
-  address: '0x3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
+  address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906',
   joined: '2023-03-10',
   status: 'Syncing'
 },
@@ -31,7 +34,7 @@ export const UNIVERSITIES = [
   name: 'Egerton University',
   type: 'Public',
   role: 'Both',
-  address: '0x4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e',
+  address: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65',
   joined: '2023-04-05',
   status: 'Online'
 }];
