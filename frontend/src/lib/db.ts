@@ -119,6 +119,36 @@ export async function getRequestById(requestId: string): Promise<TransferRequest
   return data
 }
 
+export async function getRequestByHash(documentHash: string): Promise<TransferRequest | null> {
+  if (!isSupabaseConfigured) {
+    const r = REQUESTS.find(r => r.fingerprint?.toLowerCase() === documentHash.toLowerCase())
+    if (!r) return null
+    return {
+      id: r.id,
+      request_id: r.id,
+      student_name: r.student.name,
+      student_id: r.student.studentId,
+      program: r.program,
+      source_institution: r.sourceUni.name,
+      dest_institution: r.destUni.name,
+      status: r.status as RequestStatus,
+      submitted_at: r.submittedAt,
+      tx_hash: r.txHash,
+      block_number: r.blockNumber,
+      document_hash: r.fingerprint,
+      history: r.history,
+    }
+  }
+  const { data, error } = await supabase
+    .from('requests')
+    .select('*')
+    .ilike('document_hash', documentHash)
+    .limit(1)
+    .maybeSingle()
+  if (error) { console.error('[DB] getRequestByHash:', error); return null }
+  return data
+}
+
 export async function updateRequestStatus(
   requestId: string,
   status: RequestStatus,
@@ -139,6 +169,41 @@ export async function updateRequestStatus(
       .update({ status, ...extra })
       .eq('request_id', requestId)
   }
+}
+
+// ── Verifications ───────────────────────────────────────────
+
+export type VerifyResultValue = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND'
+
+export interface VerificationRecord {
+  id: string
+  request_id?: string
+  transcript_input?: string
+  verifier_wallet?: string
+  student_name?: string
+  source_institution?: string
+  result: VerifyResultValue
+  doc_hash?: string
+  tx_hash?: string
+  created_at: string
+}
+
+export async function recordVerification(
+  rec: Omit<VerificationRecord, 'id' | 'created_at'>
+): Promise<void> {
+  if (!isSupabaseConfigured) return
+  const { error } = await supabase.from('verifications').insert(rec)
+  if (error) console.error('[DB] recordVerification:', error)
+}
+
+export async function getVerifications(): Promise<VerificationRecord[]> {
+  if (!isSupabaseConfigured) return []
+  const { data, error } = await supabase
+    .from('verifications')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) { console.error('[DB] getVerifications:', error); return [] }
+  return data ?? []
 }
 
 export function subscribeToRequests(

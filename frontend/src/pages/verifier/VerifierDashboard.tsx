@@ -6,9 +6,10 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'
-import { usePublicClient } from 'wagmi'
-import { keccak256, toBytes, parseAbiItem } from 'viem'
+import { usePublicClient, useAccount } from 'wagmi'
+import { parseAbiItem } from 'viem'
 import { hashFile } from '../../web3/useTranscript'
+import { getRequestById, getRequestByHash, recordVerification, type TransferRequest } from '../../lib/db'
 import TranscriptRegistryABI from '../../contracts/TranscriptRegistry.json'
 import addresses from '../../contracts/addresses.json'
 
@@ -22,6 +23,13 @@ interface VerifyRecord {
   txHash?: `0x${string}`
   fileName?: string
   docHash: `0x${string}`
+  transcriptId?: string
+  studentName?: string
+  sourceInstitution?: string
+}
+
+function isHexHash(value: string): value is `0x${string}` {
+  return /^0x[0-9a-fA-F]{64}$/.test(value)
 }
 
 const CONTRACT_ADDR = addresses.transcriptRegistry as `0x${string}`
@@ -35,27 +43,98 @@ const cardVariants = {
 export function VerifierDashboard() {
   const [activeTab, setActiveTab] = useState<'upload' | 'id'>('id')
   const [verifyId, setVerifyId] = useState('')
+  const [idFile, setIdFile] = useState<File | null>(null)
   const [isVerifying, setIsVerifying] = useState(false)
   const [verifyStep, setVerifyStep] = useState(0)
   const [result, setResult] = useState<VerifyResult>(null)
   const [record, setRecord] = useState<VerifyRecord | null>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const publicClient = usePublicClient()
+  const { address } = useAccount()
 
-  const handleVerifyId = (e: React.FormEvent) => {
+  // Verify by transcript ID / hash. If a file is attached, also runs tamper detection
+  // by comparing the file's SHA-256 against the hash stored for that record.
+  const handleVerifyId = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!verifyId.trim()) return
-    const hash = keccak256(toBytes(verifyId.trim()))
-    queryChain(hash)
+    const input = verifyId.trim()
+    if (!input) return
+
+    setIsVerifying(true)
+    setResult(null)
+    setRecord(null)
+
+    // Raw 0x document hash → query chain directly
+    if (isHexHash(input)) {
+      await queryChain(input, idFile?.name, undefined, input)
+      return
+    }
+
+    // Transcript ID → resolve the anchored hash from the off-chain registry
+    setVerifyStep(2)
+    const req = await getRequestById(input)
+    if (!req || !req.document_hash) {
+      setIsVerifying(false)
+      setVerifyStep(0)
+      setResult('NOT_FOUND')
+      logVerification('NOT_FOUND', null, input)
+      return
+    }
+    const expected = req.document_hash as `0x${string}`
+
+    // Tamper detection: a supplied file must hash to the anchored value
+    if (idFile) {
+      setVerifyStep(1)
+      const fileHash = await hashFile(idFile)
+      if (fileHash.toLowerCase() !== expected.toLowerCase()) {
+        setIsVerifying(false)
+        setVerifyStep(0)
+        const rec: VerifyRecord = {
+          studentId: req.student_id,
+          program: req.program,
+          issuerAddress: req.source_institution_address ?? '',
+          docHash: fileHash,
+          fileName: idFile.name,
+          transcriptId: req.request_id,
+          studentName: req.student_name,
+          sourceInstitution: req.source_institution,
+        }
+        setResult('TAMPERED')
+        setRecord(rec)
+        logVerification('TAMPERED', rec, input)
+        return
+      }
+    }
+
+    await queryChain(expected, idFile?.name, req, input)
+  }
+
+  const logVerification = (
+    resultValue: 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND',
+    rec: VerifyRecord | null,
+    input?: string,
+  ) => {
+    recordVerification({
+      request_id: rec?.transcriptId,
+      transcript_input: input || rec?.transcriptId || rec?.fileName,
+      verifier_wallet: address,
+      student_name: rec?.studentName,
+      source_institution: rec?.sourceInstitution,
+      result: resultValue,
+      doc_hash: rec?.docHash,
+      tx_hash: rec?.txHash,
+    })
   }
 
   const handleVerifyFile = async () => {
     if (!uploadedFile) return
     setIsVerifying(true)
+    setResult(null)
+    setRecord(null)
     setVerifyStep(1)
     try {
       const hash = await hashFile(uploadedFile)
-      queryChain(hash, uploadedFile.name)
+      const req = await getRequestByHash(hash)
+      await queryChain(hash, uploadedFile.name, req ?? undefined, uploadedFile.name)
     } catch {
       toast.error('Failed to hash file')
       setIsVerifying(false)
@@ -63,10 +142,13 @@ export function VerifierDashboard() {
     }
   }
 
-  const queryChain = async (docHash: `0x${string}`, fileName?: string) => {
+  const queryChain = async (
+    docHash: `0x${string}`,
+    fileName?: string,
+    req?: TransferRequest,
+    inputLabel?: string,
+  ) => {
     setIsVerifying(true)
-    setResult(null)
-    setRecord(null)
     setVerifyStep(2)
 
     try {
@@ -100,21 +182,32 @@ export function VerifierDashboard() {
       setIsVerifying(false)
       setVerifyStep(0)
 
-      if (!exists) { setResult('NOT_FOUND'); return }
+      if (!exists) {
+        setResult('NOT_FOUND')
+        logVerification('NOT_FOUND', { docHash } as VerifyRecord, inputLabel)
+        return
+      }
 
       const rec: VerifyRecord = {
-        studentId, program, issuerAddress: issuer,
+        studentId: req?.student_id || studentId,
+        program: req?.program || program,
+        issuerAddress: issuer,
         issuedAt: Number(issuedAt) * 1000,
         txHash, fileName, docHash,
+        transcriptId: req?.request_id,
+        studentName: req?.student_name,
+        sourceInstitution: req?.source_institution,
       }
 
       if (revoked) {
         setResult('REVOKED')
         setRecord(rec)
+        logVerification('REVOKED', rec, inputLabel)
         return
       }
       setResult('VERIFIED')
       setRecord(rec)
+      logVerification('VERIFIED', rec, inputLabel)
 
     } catch (err) {
       setIsVerifying(false)
@@ -191,8 +284,29 @@ export function VerifierDashboard() {
                   ) : 'Verify Record'}
                 </button>
               </div>
+              <div className="mt-4 flex items-center gap-3 flex-wrap">
+                <label className="inline-flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-600 cursor-pointer hover:bg-slate-100 transition-colors">
+                  <UploadCloud className="w-4 h-4 text-slate-400" />
+                  {idFile ? 'Change document' : 'Attach document (optional)'}
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".pdf,.json"
+                    onChange={e => { setIdFile(e.target.files?.[0] ?? null); setResult(null); setRecord(null) }}
+                  />
+                </label>
+                {idFile && (
+                  <span className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <FileText className="w-4 h-4 text-blue-500" />
+                    {idFile.name}
+                    <button type="button" onClick={() => setIdFile(null)} className="text-slate-400 hover:text-red-600">
+                      <XCircle className="w-4 h-4" />
+                    </button>
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-400 mt-3">
-                Enter the exact string used when issuing (e.g. <span className="font-mono bg-slate-100 px-1 rounded">REQ-8821</span>) or a raw 0x hash.
+                Enter the exact ID used when issuing (e.g. <span className="font-mono bg-slate-100 px-1 rounded">REQ-8821</span>) or a raw 0x hash. Attach the document to also check it for tampering.
               </p>
             </form>
           ) : (
@@ -260,6 +374,18 @@ export function VerifierDashboard() {
                     </div>
                   </div>
                 )}
+                {record?.transcriptId && (
+                  <div>
+                    <div className="text-sm text-slate-500 mb-1">Transcript ID</div>
+                    <div className="font-semibold text-slate-900">{record.transcriptId}</div>
+                  </div>
+                )}
+                {record?.studentName && (
+                  <div>
+                    <div className="text-sm text-slate-500 mb-1">Student</div>
+                    <div className="font-medium text-slate-900">{record.studentName}</div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-slate-500 mb-1">Student ID</div>
                   <div className="font-semibold text-slate-900 font-mono">{record?.studentId}</div>
@@ -268,6 +394,12 @@ export function VerifierDashboard() {
                   <div className="text-sm text-slate-500 mb-1">Program</div>
                   <div className="font-medium text-slate-900">{record?.program}</div>
                 </div>
+                {record?.sourceInstitution && (
+                  <div>
+                    <div className="text-sm text-slate-500 mb-1">Issuing Institution</div>
+                    <div className="font-medium text-slate-900">{record.sourceInstitution}</div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-slate-500 mb-1">Issuing Institution</div>
                   <div className="font-mono text-xs text-slate-600 bg-slate-50 p-2 rounded border">

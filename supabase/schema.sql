@@ -33,6 +33,7 @@ begin
 end;
 $$ language plpgsql;
 
+drop trigger if exists requests_updated_at on requests;
 create trigger requests_updated_at
   before update on requests
   for each row execute function update_updated_at();
@@ -83,3 +84,29 @@ create index if not exists idx_requests_student    on requests (student_wallet);
 create index if not exists idx_requests_source     on requests (source_institution);
 create index if not exists idx_requests_dest       on requests (dest_institution);
 create index if not exists idx_requests_submitted  on requests (submitted_at desc);
+create index if not exists idx_requests_doc_hash   on requests (document_hash);
+
+-- ─── Verifications Table ───────────────────────────────────────────────────────
+create table if not exists verifications (
+  id                uuid default gen_random_uuid() primary key,
+  request_id        text,                            -- "REQ-XXXX" if resolved
+  transcript_input  text,                            -- raw ID / hash / file name entered
+  verifier_wallet   text,                            -- 0x... of the verifying party
+  student_name      text,
+  source_institution text,
+  result            text not null,                   -- VERIFIED | TAMPERED | REVOKED | NOT_FOUND
+  doc_hash          text,
+  tx_hash           text,
+  created_at        timestamptz not null default now()
+);
+
+alter table verifications enable row level security;
+
+create policy "Anyone can read verifications"
+  on verifications for select using (true);
+
+create policy "Anyone can insert verifications"
+  on verifications for insert with check (true);
+
+create index if not exists idx_verifications_created on verifications (created_at desc);
+create index if not exists idx_verifications_result  on verifications (result);
