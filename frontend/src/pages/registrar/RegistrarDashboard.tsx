@@ -1,22 +1,40 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Clock, CheckCircle2, Search, Filter } from 'lucide-react';
-import { REQUESTS } from '../../data/mockData';
+import { FileText, Clock, CheckCircle2, Search, Loader2 } from 'lucide-react';
 import { StatusBadge } from '../../components/common/StatusBadge';
+import { getRequests, type TransferRequest } from '../../lib/db';
+
 export function RegistrarDashboard() {
+  const [requests, setRequests] = useState<TransferRequest[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const pendingRequests = REQUESTS.filter(
-    (r) => r.status === 'Pending' || r.status === 'Under Review'
+
+  useEffect(() => {
+    getRequests()
+      .then(setRequests)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const pendingRequests = useMemo(
+    () => requests.filter(r => r.status === 'Pending' || r.status === 'Under Review'),
+    [requests]
   );
-  const filteredRequests = REQUESTS.filter((req) => {
+  const issuedCount = useMemo(
+    () => requests.filter(r => ['Anchored', 'Available', 'Verified', 'Revoked'].includes(r.status)).length,
+    [requests]
+  );
+
+  const filteredRequests = requests.filter(req => {
+    const q = searchQuery.toLowerCase();
     const matchesSearch =
-    req.student.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    req.student.studentId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    req.id.toLowerCase().includes(searchQuery.toLowerCase());
+      req.student_name.toLowerCase().includes(q) ||
+      req.student_id.toLowerCase().includes(q) ||
+      req.request_id.toLowerCase().includes(q);
     const matchesStatus = statusFilter ? req.status === statusFilter : true;
     return matchesSearch && matchesStatus;
   });
+
   return (
     <div className="space-y-8 pb-12">
       <div>
@@ -47,9 +65,9 @@ export function RegistrarDashboard() {
             <FileText className="w-6 h-6" />
           </div>
           <div>
-            <div className="text-3xl font-bold text-slate-900">142</div>
+            <div className="text-3xl font-bold text-slate-900">{issuedCount}</div>
             <div className="text-sm font-medium text-slate-500">
-              Issued This Month
+              Issued (On-Chain)
             </div>
           </div>
         </div>
@@ -58,9 +76,9 @@ export function RegistrarDashboard() {
             <CheckCircle2 className="w-6 h-6" />
           </div>
           <div>
-            <div className="text-3xl font-bold text-slate-900">8,405</div>
+            <div className="text-3xl font-bold text-slate-900">{requests.length}</div>
             <div className="text-sm font-medium text-slate-500">
-              Total Issued
+              Total Requests
             </div>
           </div>
         </div>
@@ -80,18 +98,18 @@ export function RegistrarDashboard() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64" />
-              
             </div>
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
               className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-              
               <option value="">All Statuses</option>
               <option value="Pending">Pending</option>
               <option value="Under Review">Under Review</option>
               <option value="Approved">Approved</option>
+              <option value="Anchored">Anchored</option>
               <option value="Verified">Verified</option>
+              <option value="Revoked">Revoked</option>
             </select>
           </div>
         </div>
@@ -110,62 +128,63 @@ export function RegistrarDashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredRequests.length > 0 ?
-              filteredRequests.map((req) =>
-              <tr
-                key={req.id}
-                className="hover:bg-slate-50 transition-colors">
-                
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-12 text-center">
+                    <Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" />
+                  </td>
+                </tr>
+              ) : filteredRequests.length > 0 ? (
+                filteredRequests.map((req) => (
+                  <tr
+                    key={req.request_id}
+                    className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-slate-900">
-                      {req.id}
+                      {req.request_id}
                     </td>
                     <td className="px-6 py-4">
                       <div className="font-medium text-slate-900">
-                        {req.student.name}
+                        {req.student_name}
                       </div>
                       <div className="text-xs text-slate-500">
-                        {req.student.studentId}
+                        {req.student_id}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-slate-600">{req.program}</td>
                     <td className="px-6 py-4 text-slate-600">
-                      {req.destUni.name}
+                      {req.dest_institution}
                     </td>
                     <td className="px-6 py-4 text-slate-600">
-                      {new Date(req.submittedAt).toLocaleDateString()}
+                      {new Date(req.submitted_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4">
                       <StatusBadge status={req.status} />
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {req.status === 'Pending' ||
-                  req.status === 'Under Review' ?
-                  <Link
-                    to={`/registrar/review/${req.id}`}
-                    className="inline-flex items-center justify-center px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-md font-medium transition-colors">
-                    
+                      {req.status === 'Pending' || req.status === 'Under Review' ? (
+                        <Link
+                          to={`/registrar/review/${req.request_id}`}
+                          className="inline-flex items-center justify-center px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-md font-medium transition-colors">
                           Review
-                        </Link> :
-
-                  <span className="text-slate-400">Processed</span>
-                  }
+                        </Link>
+                      ) : (
+                        <span className="text-slate-400">Processed</span>
+                      )}
                     </td>
                   </tr>
-              ) :
-
-              <tr>
+                ))
+              ) : (
+                <tr>
                   <td
-                  colSpan={7}
-                  className="px-6 py-12 text-center text-slate-500">
-                  
+                    colSpan={7}
+                    className="px-6 py-12 text-center text-slate-500">
                     No requests found matching your filters.
                   </td>
                 </tr>
-              }
+              )}
             </tbody>
           </table>
         </div>
       </div>
     </div>);
-
 }
