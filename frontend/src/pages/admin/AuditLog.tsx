@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'
 import { usePublicClient, useWatchContractEvent } from 'wagmi'
-import { parseAbiItem, formatUnits } from 'viem'
+import { parseAbiItem } from 'viem'
 import TranscriptRegistryABI from '../../contracts/TranscriptRegistry.json'
-import InstitutionRegistryABI from '../../contracts/InstitutionRegistry.json'
 import addresses from '../../contracts/addresses.json'
 
 interface AuditEvent {

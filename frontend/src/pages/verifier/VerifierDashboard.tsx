@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   UploadCloud, Search, CheckCircle2, XCircle,
-  AlertTriangle, FileText, ShieldCheck, ExternalLink,
+  AlertTriangle, FileText, ShieldCheck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { OnChainReference } from '../../components/common/OnChainReference'

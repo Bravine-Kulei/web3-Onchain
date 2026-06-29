@@ -1,4 +1,3 @@
-import React from 'react';
 import { Activity, Server, Cpu, Clock, Shield } from 'lucide-react';
 import { UNIVERSITIES } from '../../data/mockData';
 import { motion } from 'framer-motion';

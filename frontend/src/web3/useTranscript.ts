@@ -1,5 +1,5 @@
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { keccak256, toBytes, encodeAbiParameters, parseAbiParameters } from 'viem'
+import { keccak256, toBytes } from 'viem'
 import TranscriptRegistryABI from '../contracts/TranscriptRegistry.json'
 import addresses from '../contracts/addresses.json'
 

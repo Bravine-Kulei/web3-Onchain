@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, Download, Loader2 } from 'lucide-react';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { OnChainReference } from '../../components/common/OnChainReference';

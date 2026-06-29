@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, FileText, Loader2, Wallet } from 'lucide-react';
 import { useAccount } from 'wagmi';

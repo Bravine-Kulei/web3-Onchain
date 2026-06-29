@@ -1,4 +1,3 @@
-import React from 'react';
 import { RequestStatus } from '../../data/mockData';
 interface StatusBadgeProps {
   status: RequestStatus | 'Not Found';

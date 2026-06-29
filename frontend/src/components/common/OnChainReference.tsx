@@ -1,4 +1,3 @@
-import React from 'react';
 import { Copy, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { useChainId } from 'wagmi';

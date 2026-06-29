@@ -208,7 +208,7 @@ export async function getVerifications(): Promise<VerificationRecord[]> {
 
 export function subscribeToRequests(
   onUpdate: (req: TransferRequest) => void,
-  filter?: { sourceInstitution?: string; destInstitution?: string }
+  _filter?: { sourceInstitution?: string; destInstitution?: string }
 ) {
   if (!isSupabaseConfigured) return () => {}
   const channel = supabase

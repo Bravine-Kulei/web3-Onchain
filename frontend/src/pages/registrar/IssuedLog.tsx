@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { Search, ShieldAlert, Loader2, ExternalLink } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Search, ShieldAlert, Loader2 } from 'lucide-react'
 import { StatusBadge } from '../../components/common/StatusBadge'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'

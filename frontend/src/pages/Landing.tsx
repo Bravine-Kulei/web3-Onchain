@@ -1,4 +1,3 @@
-import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ShieldCheck,
@@ -9,7 +8,6 @@ import {
   Building2 } from
 'lucide-react';
 import { useRole, Role } from '../context/RoleContext';
-import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 export function Landing() {
