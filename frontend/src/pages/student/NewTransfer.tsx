@@ -14,6 +14,8 @@ export function NewTransfer() {
   const navigate = useNavigate()
   const { address } = useAccount()
   const [step, setStep] = useState(1)
+  const [studentName, setStudentName] = useState('')
+  const [studentId, setStudentId] = useState('')
   const [source, setSource] = useState('')
   const [program, setProgram] = useState('')
   const [destination, setDestination] = useState('')
@@ -33,8 +35,8 @@ export function NewTransfer() {
     const req = {
       request_id: requestId,
       student_wallet: address ?? '',
-      student_name: 'Current User',   // In production: from user profile
-      student_id: `STU-${Date.now()}`,
+      student_name: studentName.trim(),
+      student_id: studentId.trim(),
       program,
       source_institution: source,
       source_institution_address: sourceUni?.address,
@@ -91,6 +93,28 @@ export function NewTransfer() {
           <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
             <h2 className="text-xl font-semibold text-slate-900">Select Source Record</h2>
             <div className="space-y-4">
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Full Name</label>
+                  <input
+                    type="text"
+                    value={studentName}
+                    onChange={e => setStudentName(e.target.value)}
+                    placeholder="e.g. Wanjiku Kamau"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Student ID</label>
+                  <input
+                    type="text"
+                    value={studentId}
+                    onChange={e => setStudentId(e.target.value)}
+                    placeholder="e.g. CS/2019/001"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Issuing Institution</label>
                 <div className="relative">
@@ -115,7 +139,7 @@ export function NewTransfer() {
               </div>
             </div>
             <div className="pt-6 flex justify-end">
-              <button onClick={() => setStep(2)} disabled={!source || !program}
+              <button onClick={() => setStep(2)} disabled={!studentName.trim() || !studentId.trim() || !source || !program}
                 className="px-6 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2">
                 Continue <ArrowRight className="w-4 h-4" />
               </button>
@@ -160,6 +184,11 @@ export function NewTransfer() {
           <form onSubmit={handleSubmit} className="space-y-6 animate-in fade-in slide-in-from-right-4">
             <h2 className="text-xl font-semibold text-slate-900">Review & Submit</h2>
             <div className="bg-slate-50 rounded-lg border border-slate-200 p-6 grid grid-cols-2 gap-4">
+              <div className="col-span-2 pb-3 mb-1 border-b border-slate-200">
+                <div className="text-sm text-slate-500 mb-1">Student</div>
+                <div className="font-medium text-slate-900">{studentName}</div>
+                <div className="text-sm text-slate-600 mt-1 font-mono">{studentId}</div>
+              </div>
               <div>
                 <div className="text-sm text-slate-500 mb-1">From</div>
                 <div className="font-medium text-slate-900">{source}</div>
