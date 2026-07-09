@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'
-import { usePublicClient, useWatchContractEvent } from 'wagmi'
+import { usePublicClient, useWatchContractEvent, useChainId } from 'wagmi'
 import { parseAbiItem } from 'viem'
-import TranscriptRegistryABI from '../../contracts/TranscriptRegistry.json'
-import addresses from '../../contracts/addresses.json'
+import { getInstitutionRegistry, getTranscriptRegistry } from '../../web3/contracts'
+import { parseReadError } from '../../web3/errors'
 
 interface AuditEvent {
   id: string
@@ -16,9 +16,6 @@ interface AuditEvent {
   txHash: `0x${string}`
   blockNumber: bigint
 }
-
-const TRANSCRIPT_ADDR = addresses.transcriptRegistry as `0x${string}`
-const REGISTRY_ADDR = addresses.institutionRegistry as `0x${string}`
 
 const ISSUED_EVENT = parseAbiItem(
   'event TranscriptIssued(bytes32 indexed documentHash, address indexed issuer, string studentId, string program, uint256 timestamp)'
@@ -42,24 +39,27 @@ export function AuditLog() {
   const [searchQuery, setSearchQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const publicClient = usePublicClient()
+  const chainId = useChainId()
+  const transcriptRegistry = getTranscriptRegistry(chainId)
+  const institutionRegistry = getInstitutionRegistry(chainId)
 
   const fetchEvents = useCallback(async () => {
-    if (!publicClient) { setLoading(false); return }
+    if (!publicClient || !transcriptRegistry || !institutionRegistry) { setLoading(false); return }
     setLoading(true)
     try {
       const [issuedLogs, revokedLogs, institutionLogs] = await Promise.all([
         publicClient.getLogs({
-          address: TRANSCRIPT_ADDR,
+          address: transcriptRegistry.address,
           event: ISSUED_EVENT,
           fromBlock: 0n,
         }),
         publicClient.getLogs({
-          address: TRANSCRIPT_ADDR,
+          address: transcriptRegistry.address,
           event: REVOKED_EVENT,
           fromBlock: 0n,
         }),
         publicClient.getLogs({
-          address: REGISTRY_ADDR,
+          address: institutionRegistry.address,
           event: INSTITUTION_EVENT,
           fromBlock: 0n,
         }),
@@ -110,26 +110,34 @@ export function AuditLog() {
       setEvents(parsed)
     } catch (err) {
       console.error('[AuditLog] Failed to fetch events:', err)
-      toast.error('Could not load on-chain events', { description: 'Is the node running?' })
+      const parsed = parseReadError(err)
+      toast.error(parsed.title, { description: parsed.description })
     } finally {
       setLoading(false)
     }
-  }, [publicClient])
+  }, [publicClient, chainId, transcriptRegistry, institutionRegistry])
 
   useEffect(() => { fetchEvents() }, [fetchEvents])
 
   // Watch for new events in real-time
   useWatchContractEvent({
-    address: TRANSCRIPT_ADDR,
-    abi: TranscriptRegistryABI.abi,
+    address: transcriptRegistry?.address,
+    abi: transcriptRegistry?.abi,
     eventName: 'TranscriptIssued',
     onLogs: () => fetchEvents(),
     batch: true,
   })
   useWatchContractEvent({
-    address: TRANSCRIPT_ADDR,
-    abi: TranscriptRegistryABI.abi,
+    address: transcriptRegistry?.address,
+    abi: transcriptRegistry?.abi,
     eventName: 'TranscriptRevoked',
+    onLogs: () => fetchEvents(),
+    batch: true,
+  })
+  useWatchContractEvent({
+    address: institutionRegistry?.address,
+    abi: institutionRegistry?.abi,
+    eventName: 'InstitutionAdded',
     onLogs: () => fetchEvents(),
     batch: true,
   })

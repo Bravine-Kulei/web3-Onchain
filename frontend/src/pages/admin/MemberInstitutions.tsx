@@ -1,16 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Building2, Plus, Search, Loader2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { usePublicClient, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi'
 import { isAddress } from 'viem'
-import InstitutionRegistryABI from '../../contracts/InstitutionRegistry.json'
-import addresses from '../../contracts/addresses.json'
+import { ChainGuard } from '../../components/common/ChainGuard'
+import { getInstitutionRegistry } from '../../web3/contracts'
+import { parseContractError } from '../../web3/errors'
 import { useWalletRole } from '../../web3/useWalletRole'
-
-const REGISTRY = {
-  address: addresses.institutionRegistry as `0x${string}`,
-  abi: InstitutionRegistryABI.abi,
-}
 
 const ROLE_LABELS: Record<number, string> = { 0: 'None', 1: 'Issuer', 2: 'Verifier', 3: 'Both' }
 
@@ -27,29 +23,32 @@ export function MemberInstitutions() {
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
+  const [deactivatingAddr, setDeactivatingAddr] = useState<string | null>(null)
 
-  // Add form state
   const [newAddr, setNewAddr] = useState('')
   const [newName, setNewName] = useState('')
-  const [newRole, setNewRole] = useState(3) // Both
+  const [newRole, setNewRole] = useState(3)
 
+  const chainId = useChainId()
+  const registry = getInstitutionRegistry(chainId)
   const publicClient = usePublicClient()
   const { isAdmin } = useWalletRole()
   const { writeContract, data: txHash, isPending, error: writeError } = useWriteContract()
   const { isSuccess } = useWaitForTransactionReceipt({ hash: txHash })
+  const [lastAction, setLastAction] = useState<'add' | 'deactivate' | null>(null)
 
   const fetchInstitutions = async () => {
-    if (!publicClient) { setLoading(false); return }
+    if (!publicClient || !registry) { setLoading(false); return }
     try {
       const addrs = await publicClient.readContract({
-        ...REGISTRY,
+        ...registry,
         functionName: 'getAll',
       }) as string[]
 
       const details = await Promise.all(
         addrs.map(addr =>
           publicClient.readContract({
-            ...REGISTRY,
+            ...registry,
             functionName: 'institutions',
             args: [addr],
           }).then((data: any) => ({
@@ -64,34 +63,64 @@ export function MemberInstitutions() {
       setInstitutions(details.filter(i => i.active))
     } catch (err) {
       console.error('[MemberInstitutions]', err)
-      toast.error('Failed to load institutions from chain')
+      const parsed = parseContractError(err)
+      toast.error('Failed to load institutions from chain', { description: parsed.description })
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { fetchInstitutions() }, [publicClient])
+  useEffect(() => { fetchInstitutions() }, [publicClient, chainId])
 
   useEffect(() => {
     if (isSuccess) {
-      toast.success(`Institution added`, { description: newName })
-      setShowAddModal(false)
-      setNewAddr(''); setNewName(''); setNewRole(3)
+      if (lastAction === 'deactivate') {
+        toast.success('Institution deactivated')
+        setDeactivatingAddr(null)
+      } else {
+        toast.success(`Institution added`, { description: newName })
+        setShowAddModal(false)
+        setNewAddr(''); setNewName(''); setNewRole(3)
+      }
+      setLastAction(null)
       fetchInstitutions()
     }
   }, [isSuccess])
 
   useEffect(() => {
-    if (writeError) toast.error('Transaction failed', { description: (writeError as Error).message })
+    if (writeError) {
+      const parsed = parseContractError(writeError)
+      toast.error(parsed.title, { description: parsed.description })
+    }
   }, [writeError])
 
   const handleAdd = () => {
+    if (!registry) {
+      toast.error('Contracts not available on this network')
+      return
+    }
     if (!isAddress(newAddr)) { toast.error('Invalid wallet address'); return }
     if (!newName.trim()) { toast.error('Institution name required'); return }
     writeContract({
-      ...REGISTRY,
+      ...registry,
       functionName: 'addInstitution',
       args: [newAddr, newName, newRole],
+    })
+    setLastAction('add')
+  }
+
+  const handleDeactivate = (addr: string, name: string) => {
+    if (!registry) {
+      toast.error('Contracts not available on this network')
+      return
+    }
+    if (!confirm(`Deactivate ${name}? They will no longer be able to issue or verify.`)) return
+    setDeactivatingAddr(addr)
+    setLastAction('deactivate')
+    writeContract({
+      ...registry,
+      functionName: 'deactivate',
+      args: [addr],
     })
   }
 
@@ -101,6 +130,7 @@ export function MemberInstitutions() {
   )
 
   return (
+    <ChainGuard>
     <div className="space-y-8 pb-12">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -141,12 +171,13 @@ export function MemberInstitutions() {
                 <th className="px-6 py-4 font-medium">Wallet Address</th>
                 <th className="px-6 py-4 font-medium">Status</th>
                 <th className="px-6 py-4 font-medium">Joined</th>
+                {isAdmin && <th className="px-6 py-4 font-medium text-right">Action</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center">
+                  <td colSpan={isAdmin ? 6 : 5} className="px-6 py-12 text-center">
                     <Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" />
                   </td>
                 </tr>
@@ -183,11 +214,22 @@ export function MemberInstitutions() {
                     <td className="px-6 py-4 text-slate-600">
                       {inst.joinedAt ? new Date(inst.joinedAt).toLocaleDateString() : '-'}
                     </td>
+                    {isAdmin && (
+                      <td className="px-6 py-4 text-right">
+                        <button
+                          onClick={() => handleDeactivate(inst.address, inst.name)}
+                          disabled={isPending && deactivatingAddr === inst.address}
+                          className="text-red-600 hover:text-red-800 font-medium text-xs uppercase tracking-wider disabled:opacity-40"
+                        >
+                          {isPending && deactivatingAddr === inst.address ? 'Deactivating…' : 'Deactivate'}
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="px-6 py-16 text-center">
+                  <td colSpan={isAdmin ? 6 : 5} className="px-6 py-16 text-center">
                     <Building2 className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-slate-400 font-medium">No institutions registered yet</p>
                     {isAdmin && <p className="text-slate-400 text-xs mt-1">Add the first institution using the button above.</p>}
@@ -199,7 +241,6 @@ export function MemberInstitutions() {
         </div>
       </div>
 
-      {/* Add Institution Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 animate-in zoom-in-95">
@@ -256,7 +297,7 @@ export function MemberInstitutions() {
               </button>
               <button
                 onClick={handleAdd}
-                disabled={isPending || !newName || !isAddress(newAddr)}
+                disabled={isPending || !newName || !isAddress(newAddr) || !registry}
                 className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
               >
                 {isPending ? <><Loader2 className="w-4 h-4 animate-spin" />Adding...</> : 'Add Institution'}
@@ -266,5 +307,6 @@ export function MemberInstitutions() {
         </div>
       )}
     </div>
+    </ChainGuard>
   )
 }
