@@ -6,14 +6,14 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'
-import { usePublicClient, useAccount } from 'wagmi'
-import { parseAbiItem } from 'viem'
+import { usePublicClient, useAccount, useChainId } from 'wagmi'
 import { hashFile } from '../../web3/useTranscript'
+import { verifyOnChain } from '../../web3/verifyOnChain'
+import { parseReadError } from '../../web3/errors'
+import { getTranscriptRegistry } from '../../web3/contracts'
 import { getRequestById, getRequestByHash, recordVerification, type TransferRequest } from '../../lib/db'
-import TranscriptRegistryABI from '../../contracts/TranscriptRegistry.json'
-import addresses from '../../contracts/addresses.json'
 
-type VerifyResult = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | null
+type VerifyResult = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | 'CHAIN_ERROR' | null
 
 interface VerifyRecord {
   studentId: string
@@ -32,9 +32,6 @@ function isHexHash(value: string): value is `0x${string}` {
   return /^0x[0-9a-fA-F]{64}$/.test(value)
 }
 
-const CONTRACT_ADDR = addresses.transcriptRegistry as `0x${string}`
-const CONTRACT = { address: CONTRACT_ADDR, abi: TranscriptRegistryABI.abi }
-
 const cardVariants = {
   hidden: { opacity: 0, scale: 0.95, y: 20 },
   visible: { opacity: 1, scale: 1, y: 0, transition: { type: 'spring', damping: 25, stiffness: 300 } },
@@ -50,6 +47,7 @@ export function VerifierDashboard() {
   const [record, setRecord] = useState<VerifyRecord | null>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const publicClient = usePublicClient()
+  const chainId = useChainId()
   const { address } = useAccount()
 
   // Verify by transcript ID / hash. If a file is attached, also runs tamper detection
@@ -109,7 +107,7 @@ export function VerifierDashboard() {
   }
 
   const logVerification = (
-    resultValue: 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND',
+    resultValue: 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | 'CHAIN_ERROR',
     rec: VerifyRecord | null,
     input?: string,
   ) => {
@@ -153,31 +151,11 @@ export function VerifierDashboard() {
 
     try {
       if (!publicClient) throw new Error('No chain connection')
+      if (!getTranscriptRegistry(chainId)) throw new Error('No chain connection')
       setVerifyStep(3)
 
-      const data = await publicClient.readContract({
-        ...CONTRACT,
-        functionName: 'verifyTranscript',
-        args: [docHash],
-      }) as [boolean, boolean, string, string, string, bigint]
-
-      const [exists, revoked, issuer, studentId, program, issuedAt] = data
-
-      // Fetch the originating tx hash from event logs
-      let txHash: `0x${string}` | undefined
-      try {
-        const logs = await publicClient.getLogs({
-          address: CONTRACT_ADDR,
-          event: parseAbiItem(
-            'event TranscriptIssued(bytes32 indexed documentHash, address indexed issuer, string studentId, string program, uint256 timestamp)'
-          ),
-          args: { documentHash: docHash },
-          fromBlock: 0n,
-        })
-        txHash = logs[0]?.transactionHash ?? undefined
-      } catch {
-        // getLogs optional — don't block on failure
-      }
+      const { exists, revoked, issuer, studentId, program, issuedAt, txHash } =
+        await verifyOnChain(publicClient, chainId, docHash)
 
       setIsVerifying(false)
       setVerifyStep(0)
@@ -192,7 +170,7 @@ export function VerifierDashboard() {
         studentId: req?.student_id || studentId,
         program: req?.program || program,
         issuerAddress: issuer,
-        issuedAt: Number(issuedAt) * 1000,
+        issuedAt,
         txHash, fileName, docHash,
         transcriptId: req?.request_id,
         studentName: req?.student_name,
@@ -212,8 +190,9 @@ export function VerifierDashboard() {
     } catch (err) {
       setIsVerifying(false)
       setVerifyStep(0)
-      toast.error('Chain query failed', { description: 'Is the local node running?' })
-      setResult('NOT_FOUND')
+      const parsed = parseReadError(err)
+      toast.error(parsed.title, { description: parsed.description })
+      setResult('CHAIN_ERROR')
     }
   }
 
@@ -487,6 +466,26 @@ export function VerifierDashboard() {
                   <OnChainReference txHash={record.txHash} />
                 </div>
               )}
+            </div>
+          </motion.div>
+        )}
+
+        {result === 'CHAIN_ERROR' && (
+          <motion.div key="chainerror" initial="hidden" animate="visible" exit="hidden" variants={cardVariants}
+            className="bg-white border-2 border-amber-400 rounded-xl overflow-hidden">
+            <div className="bg-amber-50 px-6 py-5 border-b border-amber-100 flex items-center gap-4">
+              <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-7 h-7 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-amber-900">Chain Unavailable</h3>
+                <p className="text-amber-800 text-sm mt-0.5">Could not reach the blockchain. Check your network and node.</p>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-slate-600">
+                Verification requires a live connection to the consortium ledger. Start the local Hardhat node or switch to the correct network, then try again.
+              </p>
             </div>
           </motion.div>
         )}
