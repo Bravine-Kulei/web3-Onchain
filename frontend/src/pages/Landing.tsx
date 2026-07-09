@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   ShieldCheck,
   ArrowRight,
@@ -110,6 +110,12 @@ export function Landing() {
                 
                 Try the Prototype <ArrowRight className="w-4 h-4" />
               </button>
+              <Link
+                to="/verify"
+                className="px-6 py-3 bg-white border border-blue-300 text-blue-700 font-medium rounded-lg hover:bg-blue-50 transition-colors active:scale-95 flex items-center justify-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />
+                Verify a Transcript
+              </Link>
               <button
                 onClick={() => handleComingSoon('Whitepaper')}
                 className="px-6 py-3 bg-white border border-slate-300 text-slate-700 font-medium rounded-lg hover:bg-slate-50 transition-colors active:scale-95">
