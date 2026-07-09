@@ -18,8 +18,12 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@transcrypt/shared": ["../shared/index.ts"],
+      "@transcrypt/shared/*": ["../shared/*"]
+    }
   },
-  "include": ["src"],
+  "include": ["src", "../shared/metadata.ts", "../shared/chains.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
