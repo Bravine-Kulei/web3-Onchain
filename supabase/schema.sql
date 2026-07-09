@@ -13,7 +13,11 @@ create table if not exists requests (
   source_institution_address  text,
   dest_institution            text not null,
   dest_institution_address    text,
-  status                      text not null default 'Pending',
+  status                      text not null default 'Pending'
+    check (status in (
+      'Pending', 'Under Review', 'Approved', 'Anchored',
+      'Available', 'Verified', 'Revoked', 'Rejected', 'Tampered'
+    )),
   submitted_at                timestamptz not null default now(),
   tx_hash                     text,
   block_number                bigint,
@@ -63,18 +67,52 @@ begin
 end;
 $$ language plpgsql;
 
+-- ─── Integrity: on-chain anchor fields are write-once ──────────────────────────
+-- The off-chain DB is only a convenience layer; the chain is the source of truth.
+-- To stop the off-chain record from being silently rewritten, we make the fields
+-- that mirror on-chain state immutable once set, and forbid changing the id.
+create or replace function protect_request_integrity()
+returns trigger as $$
+begin
+  if new.request_id <> old.request_id then
+    raise exception 'request_id is immutable';
+  end if;
+  if old.document_hash is not null and new.document_hash is distinct from old.document_hash then
+    raise exception 'document_hash is write-once and cannot be changed';
+  end if;
+  if old.tx_hash is not null and new.tx_hash is distinct from old.tx_hash then
+    raise exception 'tx_hash is write-once and cannot be changed';
+  end if;
+  if old.issue_date is not null and new.issue_date is distinct from old.issue_date then
+    raise exception 'issue_date is write-once and cannot be changed';
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists requests_protect_integrity on requests;
+create trigger requests_protect_integrity
+  before update on requests
+  for each row execute function protect_request_integrity();
+
 -- ─── Row Level Security ────────────────────────────────────────────────────────
+-- Demo policies: open read/write for prototyping.
+-- Production: replace with Supabase Auth + Edge Functions that verify wallet signatures (SIWE).
 alter table requests enable row level security;
 
 -- Allow all reads (consortium is semi-public)
 create policy "Anyone can read requests"
   on requests for select using (true);
 
--- Allow inserts (students submit requests)
-create policy "Anyone can insert requests"
-  on requests for insert with check (true);
+-- Students submit requests, but a new request must start in the Pending state
+-- (nobody can inject a pre-"Anchored"/"Verified" row from the client).
+create policy "Anyone can insert pending requests"
+  on requests for insert with check (status = 'Pending');
 
--- Allow updates (registrars update status)
+-- Registrars update status. Column-level integrity is enforced by the
+-- protect_request_integrity() trigger above. NOTE: for production, replace this
+-- open policy with SIWE-based auth so only the issuing institution's wallet can
+-- advance a request, and route writes through a trusted service role / Edge Function.
 create policy "Anyone can update requests"
   on requests for update using (true);
 
@@ -94,7 +132,8 @@ create table if not exists verifications (
   verifier_wallet   text,                            -- 0x... of the verifying party
   student_name      text,
   source_institution text,
-  result            text not null,                   -- VERIFIED | TAMPERED | REVOKED | NOT_FOUND
+  result            text not null
+    check (result in ('VERIFIED', 'TAMPERED', 'REVOKED', 'NOT_FOUND', 'CHAIN_ERROR')),
   doc_hash          text,
   tx_hash           text,
   created_at        timestamptz not null default now()
@@ -110,3 +149,25 @@ create policy "Anyone can insert verifications"
 
 create index if not exists idx_verifications_created on verifications (created_at desc);
 create index if not exists idx_verifications_result  on verifications (result);
+
+-- ─── SIWE nonces (one-time, used by Edge Functions) ───────────────────────────
+create table if not exists siwe_nonces (
+  address     text not null,
+  nonce       text not null primary key,
+  expires_at  timestamptz not null,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists idx_siwe_nonces_address on siwe_nonces (address);
+
+alter table siwe_nonces enable row level security;
+-- No client access — only service role via Edge Functions
+create policy "No direct client access to siwe_nonces"
+  on siwe_nonces for all using (false);
+
+-- ─── Tighten write policies (Edge Functions use service role) ─────────────────
+-- Run these after deploying Edge Functions. Direct client writes are blocked.
+drop policy if exists "Anyone can insert pending requests" on requests;
+drop policy if exists "Anyone can insert requests" on requests;
+drop policy if exists "Anyone can update requests" on requests;
+drop policy if exists "Anyone can insert verifications" on verifications;
