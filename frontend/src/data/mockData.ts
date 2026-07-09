@@ -90,6 +90,7 @@ export type RequestStatus =
 'Available' |
 'Verified' |
 'Revoked' |
+'Rejected' |
 'Tampered';
 
 const now = new Date();

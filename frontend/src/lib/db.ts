@@ -1,5 +1,11 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import { REQUESTS } from '../data/mockData'
+import {
+  secureCreateRequest,
+  secureUpdateRequestStatus,
+  secureRecordVerification,
+  SecureWriteError,
+} from './secureApi'
 
 export type RequestStatus =
   | 'Pending'
@@ -9,6 +15,7 @@ export type RequestStatus =
   | 'Available'
   | 'Verified'
   | 'Revoked'
+  | 'Rejected'
   | 'Tampered'
 
 export interface TransferRequest {
@@ -34,15 +41,28 @@ export interface TransferRequest {
 
 // ── Requests ────────────────────────────────────────────────
 
-export async function createRequest(req: Omit<TransferRequest, 'id'>): Promise<TransferRequest | null> {
+/** Generate a hard-to-collide request id: REQ-<base36 time><random>. */
+export function generateRequestId(): string {
+  const time = Date.now().toString(36).toUpperCase().slice(-4)
+  const rand = Math.floor(Math.random() * 36 ** 3)
+    .toString(36)
+    .toUpperCase()
+    .padStart(3, '0')
+  return `REQ-${time}${rand}`
+}
+
+export async function createRequest(
+  req: Omit<TransferRequest, 'id'>
+): Promise<TransferRequest | null> {
   if (!isSupabaseConfigured) return null
-  const { data, error } = await supabase
-    .from('requests')
-    .insert(req)
-    .select()
-    .single()
-  if (error) { console.error('[DB] createRequest:', error); return null }
-  return data
+
+  try {
+    return await secureCreateRequest(req)
+  } catch (err) {
+    if (err instanceof SecureWriteError) throw err
+    console.error('[DB] createRequest:', err)
+    return null
+  }
 }
 
 export async function getRequests(filters?: {
@@ -155,25 +175,17 @@ export async function updateRequestStatus(
   extra?: { tx_hash?: string; block_number?: number; document_hash?: string; ipfs_cid?: string; issue_date?: string }
 ): Promise<void> {
   if (!isSupabaseConfigured) return
-  const historyEntry = { stage: status, timestamp: new Date().toISOString() }
-  const { error } = await supabase.rpc('append_request_history', {
-    p_request_id: requestId,
-    p_status: status,
-    p_history_entry: historyEntry,
-    ...extra,
-  })
-  if (error) {
-    // Fallback: direct update
-    await supabase
-      .from('requests')
-      .update({ status, ...extra })
-      .eq('request_id', requestId)
+  try {
+    await secureUpdateRequestStatus(requestId, status, extra)
+  } catch (err) {
+    if (err instanceof SecureWriteError) throw err
+    console.error('[DB] updateRequestStatus:', err)
   }
 }
 
 // ── Verifications ───────────────────────────────────────────
 
-export type VerifyResultValue = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND'
+export type VerifyResultValue = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | 'CHAIN_ERROR'
 
 export interface VerificationRecord {
   id: string
@@ -192,8 +204,7 @@ export async function recordVerification(
   rec: Omit<VerificationRecord, 'id' | 'created_at'>
 ): Promise<void> {
   if (!isSupabaseConfigured) return
-  const { error } = await supabase.from('verifications').insert(rec)
-  if (error) console.error('[DB] recordVerification:', error)
+  await secureRecordVerification(rec)
 }
 
 export async function getVerifications(): Promise<VerificationRecord[]> {

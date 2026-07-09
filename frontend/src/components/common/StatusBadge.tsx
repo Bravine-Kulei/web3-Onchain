@@ -11,6 +11,8 @@ export function StatusBadge({ status, className = '' }: StatusBadgeProps) {
       case 'Revoked':
       case 'Tampered':
         return 'bg-red-100 text-red-800 border-red-200';
+      case 'Rejected':
+        return 'bg-rose-100 text-rose-800 border-rose-200';
       case 'Pending':
       case 'Under Review':
         return 'bg-amber-100 text-amber-800 border-amber-200';
