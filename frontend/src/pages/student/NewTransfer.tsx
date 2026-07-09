@@ -4,15 +4,15 @@ import { Building, GraduationCap, CheckCircle2, ArrowRight, ArrowLeft, Loader2 }
 import { UNIVERSITIES, PROGRAMS } from '../../data/mockData'
 import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
-import { createRequest } from '../../lib/db'
-
-function generateRequestId() {
-  return `REQ-${Math.floor(1000 + Math.random() * 9000)}`
-}
+import { createRequest, generateRequestId } from '../../lib/db'
+import { SecureWriteError } from '../../lib/secureApi'
+import { useSiweAuth } from '../../lib/siweAuth'
+import { isSupabaseConfigured } from '../../lib/supabase'
 
 export function NewTransfer() {
   const navigate = useNavigate()
-  const { address } = useAccount()
+  const { address, isConnected } = useAccount()
+  const { isAuthenticated, signIn, requiresAuth } = useSiweAuth()
   const [step, setStep] = useState(1)
   const [studentName, setStudentName] = useState('')
   const [studentId, setStudentId] = useState('')
@@ -27,6 +27,22 @@ export function NewTransfer() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    if (!isConnected || !address) {
+      toast.error('Connect your wallet first', {
+        description: 'Your wallet address is recorded with the request to prove ownership.',
+      })
+      return
+    }
+
+    if (requiresAuth && !isAuthenticated) {
+      toast.error('Sign in required', {
+        description: 'Click "Sign in" in the top bar to verify your wallet with SIWE.',
+      })
+      const ok = await signIn()
+      if (!ok) return
+    }
+
     setIsSubmitting(true)
 
     const requestId = generateRequestId()
@@ -34,7 +50,7 @@ export function NewTransfer() {
 
     const req = {
       request_id: requestId,
-      student_wallet: address ?? '',
+      student_wallet: address,
       student_name: studentName.trim(),
       student_id: studentId.trim(),
       program,
@@ -49,13 +65,28 @@ export function NewTransfer() {
 
     try {
       const saved = await createRequest(req)
+
+      if (!saved && isSupabaseConfigured) {
+        toast.error('Failed to submit request', {
+          description: 'The request could not be saved. Please try again.',
+        })
+        setIsSubmitting(false)
+        return
+      }
+
+      const finalId = saved?.request_id ?? requestId
       toast.success('Transfer request submitted', {
-        description: `Request ${requestId} is now pending review.`,
+        description: `Request ${finalId} is now pending review.`,
       })
-      navigate(`/student/request/${saved?.request_id ?? requestId}`)
-    } catch {
-      toast.error('Failed to submit request')
-    } finally {
+      navigate(`/student/request/${finalId}`)
+    } catch (err) {
+      if (err instanceof SecureWriteError) {
+        toast.error(err.message, {
+          description: err.code === 'UNAUTHORIZED' ? 'Use "Sign in" in the top bar.' : undefined,
+        })
+      } else {
+        toast.error('Failed to submit request')
+      }
       setIsSubmitting(false)
     }
   }
@@ -65,6 +96,16 @@ export function NewTransfer() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-slate-900">Request Transcript Transfer</h1>
         <p className="text-slate-600 mt-1">Initiate a secure transfer of your academic record.</p>
+        {!isConnected && (
+          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
+            Connect your wallet before submitting — your address is bound to this request.
+          </p>
+        )}
+        {isConnected && requiresAuth && !isAuthenticated && (
+          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
+            Sign in via the top bar to verify your wallet before submitting.
+          </p>
+        )}
       </div>
 
       {/* Step indicator */}
@@ -213,7 +254,7 @@ export function NewTransfer() {
                 className="px-6 py-2.5 border border-slate-300 text-slate-700 font-medium rounded-lg hover:bg-slate-50 flex items-center gap-2">
                 <ArrowLeft className="w-4 h-4" /> Back
               </button>
-              <button type="submit" disabled={!consent || isSubmitting}
+              <button type="submit" disabled={!consent || isSubmitting || !isConnected}
                 className="px-8 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
                 {isSubmitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</> : 'Submit Request'}
               </button>

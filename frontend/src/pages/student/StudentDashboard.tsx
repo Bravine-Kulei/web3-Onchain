@@ -19,7 +19,7 @@ export function StudentDashboard() {
   }, [address]);
 
   const activeRequests = useMemo(
-    () => requests.filter(r => !['Verified', 'Revoked'].includes(r.status)),
+    () => requests.filter(r => !['Verified', 'Revoked', 'Rejected'].includes(r.status)),
     [requests]
   );
   const completedRequests = useMemo(

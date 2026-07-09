@@ -19,7 +19,7 @@ export function RequestDetail() {
   }, [id]);
 
   const getStage = (status: string): LifecycleStage => {
-    if (status === 'Pending') return 'Requested';
+    if (status === 'Pending' || status === 'Rejected') return 'Requested';
     if (status === 'Revoked' || status === 'Tampered') return 'Anchored';
     return status as LifecycleStage;
   };
@@ -63,6 +63,19 @@ export function RequestDetail() {
           </p>
         </div>
       </div>
+
+      {request.status === 'Rejected' && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start gap-3">
+          <FileText className="w-6 h-6 text-rose-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-rose-900">Request Declined</h3>
+            <p className="text-rose-800 text-sm mt-1">
+              The registrar at {request.source_institution} declined this transfer request.
+              You may submit a new request if you believe this was in error.
+            </p>
+          </div>
+        </div>
+      )}
 
       {request.status === 'Verified' && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-start gap-3">
