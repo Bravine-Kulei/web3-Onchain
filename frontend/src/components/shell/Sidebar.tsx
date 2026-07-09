@@ -1,5 +1,8 @@
 import { NavLink } from 'react-router-dom';
 import { useRole } from '../../context/RoleContext';
+import { useAccount, useChainId } from 'wagmi';
+import { expectedChainId, expectedChainName } from '../../web3/config';
+import { getChainDeployment } from '../../web3/contracts';
 import {
   LayoutDashboard,
   Send,
@@ -11,8 +14,22 @@ import {
   ActivitySquare } from
 'lucide-react';
 import { toast } from 'sonner';
+
 export function Sidebar() {
   const { role } = useRole();
+  const { isConnected } = useAccount();
+  const chainId = useChainId();
+  const deployment = getChainDeployment(chainId);
+
+  const networkHealthy = isConnected && chainId === expectedChainId && !!deployment;
+  const networkLabel = !isConnected
+    ? 'Wallet disconnected'
+    : chainId !== expectedChainId
+      ? `Wrong network (${chainId})`
+      : !deployment
+        ? 'No deployment on chain'
+        : expectedChainName;
+
   const navItems = {
     Student: [
     {
@@ -104,9 +121,10 @@ export function Sidebar() {
       <div className="mt-auto p-4 border-t border-slate-100">
         <div
           onClick={() =>
-          toast.success('Network Status: Healthy', {
-            description:
-            'Connected to consortium mainnet. All nodes syncing.'
+          toast.info('Network status', {
+            description: networkHealthy
+              ? `Connected to ${expectedChainName} with deployed contracts.`
+              : `Expected ${expectedChainName} (chain ${expectedChainId}). Current: ${networkLabel}.`,
           })
           }
           className="bg-slate-50 rounded-lg p-3 border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors">
@@ -115,8 +133,8 @@ export function Sidebar() {
             Network Status
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-700">
-            <div className="w-2 h-2 rounded-full bg-green-500"></div>
-            Mainnet Connected
+            <div className={`w-2 h-2 rounded-full ${networkHealthy ? 'bg-green-500' : 'bg-amber-500'}`}></div>
+            {networkLabel}
           </div>
         </div>
       </div>

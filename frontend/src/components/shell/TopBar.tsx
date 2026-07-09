@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useRef } from 'react'
 import { useRole, Role } from '../../context/RoleContext'
 import { WalletChip } from './WalletChip'
 import {
@@ -24,20 +24,42 @@ const ON_CHAIN_TO_DEMO: Record<string, Role> = {
   None: 'Student',
 }
 
+const ROLE_HOME: Record<Role, string> = {
+  Student: '/student/dashboard',
+  Registrar: '/registrar/dashboard',
+  Verifier: '/verifier/dashboard',
+  Admin: '/admin/institutions',
+}
+
 export function TopBar() {
   const { role, setRole } = useRole()
   const navigate = useNavigate()
   const { isConnected } = useAccount()
   const { role: onChainRole, institutionName, isLoading } = useWalletRole()
+  const autoApplied = useRef(false)
+
+  const detectedRole = isConnected && !isLoading ? ON_CHAIN_TO_DEMO[onChainRole] : null
+  const roleMismatch = detectedRole && detectedRole !== role && role !== 'Student'
+
+  useEffect(() => {
+    if (!isConnected || isLoading || !detectedRole || detectedRole === 'Student') return
+    if (autoApplied.current) return
+    autoApplied.current = true
+    setRole(detectedRole)
+    navigate(ROLE_HOME[detectedRole])
+  }, [isConnected, isLoading, detectedRole, setRole, navigate])
 
   const handleRoleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newRole = e.target.value as Role
     setRole(newRole)
-    navigate('/')
+    navigate(ROLE_HOME[newRole])
   }
 
-  const detectedRole = isConnected && !isLoading ? ON_CHAIN_TO_DEMO[onChainRole] : null
-  const roleMismatch = detectedRole && detectedRole !== role && role !== 'Student'
+  const applyDetectedRole = () => {
+    if (!detectedRole) return
+    setRole(detectedRole)
+    navigate(ROLE_HOME[detectedRole])
+  }
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm">
@@ -73,10 +95,14 @@ export function TopBar() {
 
         {/* Role mismatch warning */}
         {roleMismatch && (
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+          <button
+            type="button"
+            onClick={applyDetectedRole}
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 hover:bg-amber-100 transition-colors"
+          >
             <AlertTriangle className="w-3.5 h-3.5" />
-            Your wallet is registered as {detectedRole}
-          </div>
+            Switch to {detectedRole} view
+          </button>
         )}
       </div>
 
