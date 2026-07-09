@@ -1,0 +1,30 @@
+{
+  "name": "transcrypt",
+  "private": true,
+  "description": "TransCrypt — blockchain-anchored academic transcript platform",
+  "workspaces": [
+    "shared",
+    "contracts",
+    "frontend"
+  ],
+  "scripts": {
+    "compile": "npm run compile --workspace=contracts",
+    "sync": "npm run compile && npm run sync --workspace=contracts",
+    "test": "npm run test --workspace=contracts",
+    "node": "npm run node --workspace=contracts",
+    "deploy:local": "cross-env SEED=true npm run deploy --workspace=contracts",
+    "deploy:amoy": "npm run deploy:amoy --workspace=contracts",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:stack": "wait-on tcp:127.0.0.1:8545 && npm run deploy:local && npm run dev:frontend",
+    "dev": "concurrently -k -n chain,stack -c blue,green \"npm run node\" \"npm run dev:stack\"",
+    "build": "npm run compile && npm run build --workspace=frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "wait-on": "^8.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

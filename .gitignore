@@ -3,6 +3,7 @@ dist/
 contracts/artifacts/
 contracts/cache/
 contracts/typechain-types/
+.env
 contracts/.env
 frontend/.env
 *.local
