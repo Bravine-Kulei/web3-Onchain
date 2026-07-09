@@ -12,7 +12,7 @@ web3-Onchain/
 ├── frontend/      Vite + React + TypeScript UI (wagmi + viem + Supabase)
 └── supabase/      Database schema (requests + verifications)
 ```
-
+   
 ## Architecture
 
 ```
@@ -39,14 +39,29 @@ Student → request detail ──────────────► live st
 
 ### 1. Apply the database schema
 
-In the [Supabase SQL Editor](https://app.supabase.com), run the contents of [`supabase/schema.sql`](supabase/schema.sql). This creates the `requests` and `verifications` tables with the required policies and indexes.
+In the [Supabase SQL Editor](https://app.supabase.com), run the contents of [`supabase/schema.sql`](supabase/schema.sql). This creates the `requests`, `verifications`, and `siwe_nonces` tables.
 
-Then set the frontend env vars in `frontend/.env`:
+Then set the frontend env vars in `.env` at the repo root (or `frontend/.env`):
 
 ```
 VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key
 ```
+
+### 1b. Deploy SIWE Edge Functions (production / secured writes)
+
+Off-chain writes are secured via **Sign-In With Ethereum**. Deploy the Edge Functions and set secrets — see [`supabase/functions/README.md`](supabase/functions/README.md).
+
+Quick version:
+
+```bash
+supabase link --project-ref YOUR_PROJECT_ID
+supabase secrets set SIWE_SESSION_SECRET=your_long_random_secret
+supabase secrets set SIWE_DOMAIN=localhost:5173
+supabase functions deploy
+```
+
+For **local dev without Edge Functions**, add `VITE_AUTH_BYPASS=true` to `.env` (falls back to direct DB writes).
 
 Pinata/IPFS is optional — see `frontend/.env.example`. If unset, the app anchors the hash only and verification still works fully.
 
@@ -81,14 +96,14 @@ pnpm install
 pnpm dev
 ```
 
-Open http://localhost:5173 and connect your wallet.
+Open http://localhost:5173, connect your wallet, and click **Sign in** (SIWE) before submitting or updating requests.
 
 ## End-to-end demo script
 
-Use the **View As** dropdown (top bar) to switch role views. Blockchain writes require the correct wallet (issuing/revoking needs an authorized issuer like Account #1).
+Use the **View As** dropdown (top bar) to switch role views. **Sign in** with SIWE after connecting your wallet. Blockchain writes require the correct wallet (issuing/revoking needs an authorized issuer like Account #1).
 
-1. **Student → Request New Transfer.** Enter a name + student ID, pick source (e.g. Kabarak), program, and destination (e.g. Laikipia). Submit. A `REQ-XXXX` row is created in Supabase.
-2. **Registrar (View As Registrar, wallet = Account #1).** The new request appears in the queue. Open **Review**, optionally attach a document to hash, then **Approve & Issue**. Confirm the MetaMask transaction — the hash is anchored on-chain and the request becomes **Anchored**.
+1. **Student → Request New Transfer.** Connect wallet → **Sign in** → enter name + student ID, pick source (e.g. Kabarak), program, and destination (e.g. Laikipia). Submit. A `REQ-XXXX` row is created in Supabase (bound to your wallet).
+2. **Registrar (View As Registrar, wallet = Account #1).** **Sign in** with the issuer wallet. The new request appears in the queue. Open **Review**, optionally attach a document to hash, then **Approve & Issue**. Confirm the MetaMask transaction — the hash is anchored on-chain and the request becomes **Anchored**.
 3. **Verifier (View As Verifier).**
    - **Verified**: enter the `REQ-XXXX` ID → resolves the anchored hash and confirms on-chain.
    - **Tampered**: enter the `REQ-XXXX` ID and attach a *different* file → SHA-256 mismatch → **Tampered**.
@@ -111,5 +126,6 @@ Set `VITE_CHAIN=amoy` in `frontend/.env`. On Amoy, on-chain references link to P
 
 ## Notes
 
-- Admin **Network Nodes** and **Audit Log** pages are illustrative mock panels; the rest of the core flow (student → registrar → verifier → student, plus Member Institutions and Issued Log) is backed by live Supabase + on-chain data.
-- The "View As" switcher is a demo convenience and is independent of wallet auth; the top bar shows your wallet's actual on-chain role and warns on mismatch.
+- **SIWE auth** secures off-chain writes: students can only create requests for their own wallet; issuers can only update requests for their institution address. See `supabase/functions/README.md`.
+- Admin **Network Nodes** is illustrative mock UI; **Audit Log** and **Member Institutions** read live on-chain data.
+- Route guards enforce on-chain roles for Registrar/Admin views; the **View As** switcher selects which dashboard to navigate.
