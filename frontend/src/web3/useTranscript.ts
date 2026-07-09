@@ -1,36 +1,40 @@
-import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { keccak256, toBytes } from 'viem'
-import TranscriptRegistryABI from '../contracts/TranscriptRegistry.json'
-import addresses from '../contracts/addresses.json'
+import { useReadContract, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi'
+import { metadataHashInput } from '@transcrypt/shared/metadata'
+import { getTranscriptRegistry } from './contracts'
 
-const CONTRACT = {
-  address: addresses.transcriptRegistry as `0x${string}`,
-  abi: TranscriptRegistryABI.abi,
-}
+export { metadataHashInput }
 
-// Hash a file using SHA-256 via Web Crypto API → returns hex bytes32
-export async function hashFile(file: File): Promise<`0x${string}`> {
-  const buffer = await file.arrayBuffer()
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+async function sha256(data: ArrayBuffer | Uint8Array): Promise<`0x${string}`> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return ('0x' + hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`
 }
 
-// Hash a string (for transcript ID lookups in demo)
-export function hashString(str: string): `0x${string}` {
-  return keccak256(toBytes(str))
+export async function hashFile(file: File): Promise<`0x${string}`> {
+  const buffer = await file.arrayBuffer()
+  return sha256(buffer)
+}
+
+export async function hashString(str: string): Promise<`0x${string}`> {
+  return sha256(new TextEncoder().encode(str))
 }
 
 export function useVerifyTranscript(documentHash: `0x${string}` | undefined) {
+  const chainId = useChainId()
+  const contract = getTranscriptRegistry(chainId)
+
   return useReadContract({
-    ...CONTRACT,
+    address: contract?.address,
+    abi: contract?.abi,
     functionName: 'verifyTranscript',
     args: documentHash ? [documentHash] : undefined,
-    query: { enabled: !!documentHash },
+    query: { enabled: !!documentHash && !!contract },
   })
 }
 
 export function useIssueTranscript() {
+  const chainId = useChainId()
+  const contract = getTranscriptRegistry(chainId)
   const { writeContract, data: hash, isPending, error } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
@@ -40,27 +44,31 @@ export function useIssueTranscript() {
     studentId: string,
     program: string
   ) => {
+    if (!contract) return
     writeContract({
-      ...CONTRACT,
+      ...contract,
       functionName: 'issueTranscript',
       args: [documentHash, recipient, studentId, program],
     })
   }
 
-  return { issue, isPending: isPending || isConfirming, isSuccess, txHash: hash, error }
+  return { issue, isPending: isPending || isConfirming, isSuccess, txHash: hash, error, hasContract: !!contract }
 }
 
 export function useRevokeTranscript() {
+  const chainId = useChainId()
+  const contract = getTranscriptRegistry(chainId)
   const { writeContract, data: hash, isPending, error } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const revoke = (documentHash: `0x${string}`) => {
+    if (!contract) return
     writeContract({
-      ...CONTRACT,
+      ...contract,
       functionName: 'revokeTranscript',
       args: [documentHash],
     })
   }
 
-  return { revoke, isPending: isPending || isConfirming, isSuccess, txHash: hash, error }
+  return { revoke, isPending: isPending || isConfirming, isSuccess, txHash: hash, error, hasContract: !!contract }
 }

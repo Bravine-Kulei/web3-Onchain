@@ -1,26 +1,22 @@
-import { useReadContracts, useAccount } from 'wagmi'
-import InstitutionRegistryABI from '../contracts/InstitutionRegistry.json'
-import addresses from '../contracts/addresses.json'
-
-const REGISTRY = {
-  address: addresses.institutionRegistry as `0x${string}`,
-  abi: InstitutionRegistryABI.abi,
-}
+import { useReadContracts, useAccount, useChainId } from 'wagmi'
+import { getInstitutionRegistry } from './contracts'
 
 export type OnChainRole = 'Issuer' | 'Verifier' | 'Both' | 'Admin' | 'None'
 
 export function useWalletRole() {
   const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const registry = getInstitutionRegistry(chainId)
 
   const { data, isLoading } = useReadContracts({
-    contracts: [
-      { ...REGISTRY, functionName: 'isIssuer', args: [address!] },
-      { ...REGISTRY, functionName: 'isVerifier', args: [address!] },
-      { ...REGISTRY, functionName: 'institutions', args: [address!] },
-      { ...REGISTRY, functionName: 'admin', args: [] },
-    ],
+    contracts: registry && address ? [
+      { ...registry, functionName: 'isIssuer', args: [address] },
+      { ...registry, functionName: 'isVerifier', args: [address] },
+      { ...registry, functionName: 'institutions', args: [address] },
+      { ...registry, functionName: 'admin', args: [] },
+    ] : [],
     query: {
-      enabled: !!address && isConnected,
+      enabled: !!address && isConnected && !!registry,
       staleTime: 1000 * 60 * 5,
     },
   })
@@ -47,5 +43,6 @@ export function useWalletRole() {
     isRegistered: institution?.[2] ?? false,
     institutionName: (institution?.[0] as string) ?? '',
     isLoading,
+    hasRegistry: !!registry,
   }
 }
