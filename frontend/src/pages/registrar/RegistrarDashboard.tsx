@@ -110,6 +110,7 @@ export function RegistrarDashboard() {
               <option value="Anchored">Anchored</option>
               <option value="Verified">Verified</option>
               <option value="Revoked">Revoked</option>
+              <option value="Rejected">Rejected</option>
             </select>
           </div>
         </div>

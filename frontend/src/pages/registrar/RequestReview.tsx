@@ -5,26 +5,34 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { OnChainReference } from '../../components/common/OnChainReference';
 import { toast } from 'sonner';
 import { useAccount } from 'wagmi';
-import { keccak256, toBytes, isAddress, zeroAddress } from 'viem';
-import { useIssueTranscript, hashFile } from '../../web3/useTranscript';
+import { isAddress } from 'viem';
+import { ChainGuard } from '../../components/common/ChainGuard';
+import { parseContractError } from '../../web3/errors';
+import { useWalletRole } from '../../web3/useWalletRole';
+import { useIssueTranscript, hashFile, hashString, metadataHashInput } from '../../web3/useTranscript';
 import { uploadToIPFS, isPinataConfigured } from '../../lib/pinata';
 import { updateRequestStatus, getRequestById, type TransferRequest } from '../../lib/db';
+import { SecureWriteError } from '../../lib/secureApi';
+import { useSiweAuth } from '../../lib/siweAuth';
 
 export function RequestReview() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { isConnected } = useAccount();
+  const { isIssuer, hasRegistry } = useWalletRole();
+  const { isAuthenticated, signIn, requiresAuth } = useSiweAuth();
 
   const [request, setRequest] = useState<TransferRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [issueStep, setIssueStep] = useState(0);
+  const [isRejecting, setIsRejecting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [docHash, setDocHash] = useState<`0x${string}`>('0x');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [ipfsCid, setIpfsCid] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { issue, isPending, isSuccess, txHash, error } = useIssueTranscript();
+  const { issue, isPending, isSuccess, txHash, error, hasContract } = useIssueTranscript();
 
   useEffect(() => {
     if (!id) return;
@@ -36,14 +44,17 @@ export function RequestReview() {
   // Default hash from request metadata (used when no file uploaded)
   useEffect(() => {
     if (!request) return;
-    const hash = keccak256(toBytes(`${request.request_id}:${request.student_id}:${request.program}`));
-    setDocHash(hash);
+    hashString(metadataHashInput(request.request_id, request.student_id, request.program))
+      .then(setDocHash)
+      .catch(() => toast.error('Failed to compute document hash'));
   }, [request]);
 
   // When a file is selected, compute its real SHA-256 hash
   useEffect(() => {
     if (!uploadedFile) return;
-    hashFile(uploadedFile).then(setDocHash);
+    hashFile(uploadedFile)
+      .then(setDocHash)
+      .catch(() => toast.error('Failed to hash uploaded file'));
   }, [uploadedFile]);
 
   useEffect(() => {
@@ -53,6 +64,9 @@ export function RequestReview() {
         document_hash: docHash,
         ipfs_cid: ipfsCid,
         issue_date: new Date().toISOString(),
+      }).catch((err: unknown) => {
+        const msg = err instanceof SecureWriteError ? err.message : 'Anchored on-chain but status update failed';
+        toast.error(msg, { description: 'Sign in with your issuer wallet — the chain record is still valid.' });
       });
       setIssueStep(0);
       setShowSuccess(true);
@@ -61,15 +75,49 @@ export function RequestReview() {
 
   useEffect(() => {
     if (error) {
-      toast.error('Transaction failed', { description: (error as Error).message });
+      const parsed = parseContractError(error);
+      toast.error(parsed.title, { description: parsed.description });
       setIssueStep(0);
     }
   }, [error]);
 
+  const alreadyProcessed =
+    !!request && !['Pending', 'Under Review'].includes(request.status);
+  const canIssue =
+    isConnected && isIssuer && hasContract && hasRegistry && !alreadyProcessed;
+
+  const ensureSignedIn = async (): Promise<boolean> => {
+    if (!requiresAuth || isAuthenticated) return true;
+    toast.error('Sign in required', {
+      description: 'Issuers must verify their wallet via SIWE before updating requests.',
+    });
+    return signIn();
+  };
+
   const handleApprove = async () => {
     if (!request) return;
+    if (!(await ensureSignedIn())) return;
     if (!isConnected) {
       toast.error('Connect your wallet first');
+      return;
+    }
+    if (!isIssuer) {
+      toast.error('Not an authorized issuer', {
+        description: 'Connect an issuer wallet (e.g. Kabarak University / Account #1) to anchor transcripts.',
+      });
+      return;
+    }
+    if (!hasContract || !hasRegistry) {
+      toast.error('Contracts not available on this network');
+      return;
+    }
+    const hasValidRecipient =
+      !!request.dest_institution_address && isAddress(request.dest_institution_address);
+    if (!hasValidRecipient) {
+      toast.error('Missing destination wallet', {
+        description:
+          'This request has no valid destination institution address, so it cannot be anchored to a recipient.',
+      });
       return;
     }
     setIssueStep(1);
@@ -88,19 +136,25 @@ export function RequestReview() {
     }
 
     setIssueStep(3);
-    const recipient =
-      request.dest_institution_address && isAddress(request.dest_institution_address)
-        ? (request.dest_institution_address as `0x${string}`)
-        : zeroAddress;
+    const recipient = request.dest_institution_address as `0x${string}`;
     issue(finalHash, recipient, request.student_id, request.program);
   };
 
-  const handleReject = () => {
+  const handleReject = async () => {
     if (!request) return;
-    toast.error('Request Rejected', {
-      description: `Transfer request ${request.request_id} has been declined.`,
-    });
-    navigate('/registrar/dashboard');
+    if (!(await ensureSignedIn())) return;
+    setIsRejecting(true);
+    try {
+      await updateRequestStatus(request.request_id, 'Rejected');
+      toast.error('Request Rejected', {
+        description: `Transfer request ${request.request_id} has been declined.`,
+      });
+      navigate('/registrar/dashboard');
+    } catch (err) {
+      const msg = err instanceof SecureWriteError ? err.message : 'Failed to reject request';
+      toast.error(msg);
+      setIsRejecting(false);
+    }
   };
 
   if (loading) {
@@ -124,6 +178,7 @@ export function RequestReview() {
   }
 
   return (
+    <ChainGuard>
     <div className="space-y-6 pb-12">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -144,13 +199,30 @@ export function RequestReview() {
         <div className="flex gap-3">
           <button
             onClick={handleReject}
-            className="px-4 py-2 border border-slate-300 text-slate-700 font-medium rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-2 active:scale-95">
-            <X className="w-4 h-4" />
-            Reject
+            disabled={isRejecting || isPending || showSuccess || alreadyProcessed}
+            className="px-4 py-2 border border-slate-300 text-slate-700 font-medium rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-2 active:scale-95 disabled:opacity-60">
+            {isRejecting ? (
+              <>
+                <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+                Rejecting...
+              </>
+            ) : (
+              <>
+                <X className="w-4 h-4" />
+                Reject
+              </>
+            )}
           </button>
           <button
             onClick={handleApprove}
-            disabled={isPending || showSuccess}
+            disabled={isPending || isRejecting || showSuccess || !canIssue}
+            title={
+              alreadyProcessed
+                ? `This request is already ${request.status}`
+                : !canIssue
+                ? 'Connect an authorized issuer wallet on the correct network'
+                : undefined
+            }
             className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 disabled:opacity-80 active:scale-95 min-w-[180px] justify-center">
             {isPending ? (
               <>
@@ -166,6 +238,12 @@ export function RequestReview() {
           </button>
         </div>
       </div>
+
+      {alreadyProcessed && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          This request has already been processed (<span className="font-medium text-slate-900">{request.status}</span>). No further action can be taken.
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Left Column: Details */}
@@ -386,5 +464,7 @@ export function RequestReview() {
           </div>
         )}
       </AnimatePresence>
-    </div>);
+    </div>
+    </ChainGuard>
+  );
 }

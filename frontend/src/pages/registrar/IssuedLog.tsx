@@ -2,10 +2,15 @@ import { useState, useEffect } from 'react'
 import { Search, ShieldAlert, Loader2 } from 'lucide-react'
 import { StatusBadge } from '../../components/common/StatusBadge'
 import { OnChainReference } from '../../components/common/OnChainReference'
+import { ChainGuard } from '../../components/common/ChainGuard'
 import { toast } from 'sonner'
-import { keccak256, toBytes } from 'viem'
-import { useRevokeTranscript } from '../../web3/useTranscript'
+import { useAccount } from 'wagmi'
+import { useRevokeTranscript, hashString, metadataHashInput } from '../../web3/useTranscript'
+import { parseContractError } from '../../web3/errors'
+import { useWalletRole } from '../../web3/useWalletRole'
 import { getRequests, updateRequestStatus, type TransferRequest } from '../../lib/db'
+import { SecureWriteError } from '../../lib/secureApi'
+import { useSiweAuth } from '../../lib/siweAuth'
 
 export function IssuedLog() {
   const [requests, setRequests] = useState<TransferRequest[]>([])
@@ -15,7 +20,11 @@ export function IssuedLog() {
   const [showRevokeModal, setShowRevokeModal] = useState(false)
   const [selectedRequest, setSelectedRequest] = useState<TransferRequest | null>(null)
 
-  const { revoke, isPending, isSuccess, txHash, error } = useRevokeTranscript()
+  const { isConnected } = useAccount()
+  const { isIssuer, hasRegistry } = useWalletRole()
+  const { isAuthenticated, signIn, requiresAuth } = useSiweAuth()
+  const { revoke, isPending, isSuccess, txHash, error, hasContract } = useRevokeTranscript()
+  const canRevoke = isConnected && isIssuer && hasContract && hasRegistry
 
   useEffect(() => {
     getRequests({ status: ['Anchored', 'Available', 'Verified', 'Revoked'] })
@@ -23,39 +32,64 @@ export function IssuedLog() {
       .finally(() => setLoading(false))
   }, [])
 
-  // After successful revoke — update status in DB and refresh UI
   useEffect(() => {
     if (isSuccess && selectedRequest) {
       updateRequestStatus(selectedRequest.request_id, 'Revoked', { tx_hash: txHash })
-      setRequests(prev =>
-        prev.map(r =>
-          r.request_id === selectedRequest.request_id ? { ...r, status: 'Revoked' } : r
-        )
-      )
-      toast.success(`Transcript ${selectedRequest.request_id} revoked`, {
-        description: txHash ? `Tx: ${txHash.slice(0, 10)}...` : 'Revocation anchored on-chain.',
-      })
-      setShowRevokeModal(false)
-      setSelectedRequest(null)
+        .then(() => {
+          setRequests(prev =>
+            prev.map(r =>
+              r.request_id === selectedRequest.request_id ? { ...r, status: 'Revoked' } : r
+            )
+          )
+          toast.success(`Transcript ${selectedRequest.request_id} revoked`, {
+            description: txHash ? `Tx: ${txHash.slice(0, 10)}...` : 'Revocation anchored on-chain.',
+          })
+          setShowRevokeModal(false)
+          setSelectedRequest(null)
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof SecureWriteError ? err.message : 'On-chain revoke succeeded but status update failed'
+          toast.error(msg, { description: 'Sign in with your issuer wallet and retry.' })
+        })
     }
   }, [isSuccess])
 
   useEffect(() => {
     if (error) {
-      toast.error('Revocation failed', { description: (error as Error).message })
+      const parsed = parseContractError(error)
+      toast.error(parsed.title, { description: parsed.description })
     }
   }, [error])
 
   const handleRevokeClick = (req: TransferRequest) => {
+    if (!canRevoke) {
+      toast.error('Not an authorized issuer', {
+        description: 'Connect the issuing institution wallet to revoke transcripts.',
+      })
+      return
+    }
     setSelectedRequest(req)
     setShowRevokeModal(true)
   }
 
-  const confirmRevoke = () => {
+  const confirmRevoke = async () => {
     if (!selectedRequest) return
-    // Reconstruct the same hash used during issuance
-    const docHash = selectedRequest.document_hash as `0x${string}` ||
-      keccak256(toBytes(`${selectedRequest.request_id}:${selectedRequest.student_id}:${selectedRequest.program}`))
+    if (!canRevoke) {
+      toast.error('Not an authorized issuer')
+      return
+    }
+    if (requiresAuth && !isAuthenticated) {
+      toast.error('Sign in required', { description: 'Verify your issuer wallet via SIWE first.' })
+      const ok = await signIn()
+      if (!ok) return
+    }
+
+    let docHash = selectedRequest.document_hash as `0x${string}` | undefined
+    if (!docHash) {
+      docHash = await hashString(
+        metadataHashInput(selectedRequest.request_id, selectedRequest.student_id, selectedRequest.program)
+      )
+    }
     revoke(docHash)
   }
 
@@ -70,12 +104,18 @@ export function IssuedLog() {
   })
 
   return (
+    <ChainGuard>
     <div className="space-y-8 pb-12">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Issued Transcripts Log</h1>
         <p className="text-slate-600 mt-1">
           Permanent record of all transcripts anchored by your institution.
         </p>
+        {!canRevoke && isConnected && (
+          <p className="text-sm text-amber-700 mt-2">
+            Connect an authorized issuer wallet to revoke transcripts on-chain.
+          </p>
+        )}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -147,7 +187,8 @@ export function IssuedLog() {
                       {req.status !== 'Revoked' && (
                         <button
                           onClick={() => handleRevokeClick(req)}
-                          className="text-red-600 hover:text-red-800 font-medium text-xs uppercase tracking-wider"
+                          disabled={!canRevoke}
+                          className="text-red-600 hover:text-red-800 font-medium text-xs uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           Revoke
                         </button>
@@ -167,7 +208,6 @@ export function IssuedLog() {
         </div>
       </div>
 
-      {/* Revoke Modal */}
       {showRevokeModal && selectedRequest && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 animate-in zoom-in-95">
@@ -193,7 +233,7 @@ export function IssuedLog() {
               </button>
               <button
                 onClick={confirmRevoke}
-                disabled={isPending}
+                disabled={isPending || !canRevoke}
                 className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 disabled:opacity-70"
               >
                 {isPending ? (
@@ -205,5 +245,6 @@ export function IssuedLog() {
         </div>
       )}
     </div>
+    </ChainGuard>
   )
 }
