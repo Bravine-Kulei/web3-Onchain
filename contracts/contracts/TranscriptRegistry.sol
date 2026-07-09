@@ -9,15 +9,25 @@ contract TranscriptRegistry {
     struct Transcript {
         bytes32 documentHash;
         address issuer;
-        address recipient; // receiving institution
+        address recipient;
         string studentId;
         string program;
         uint256 issuedAt;
         Status status;
     }
 
+    error ZeroAddress();
+    error NotAnAuthorizedIssuer();
+    error HashAlreadyAnchored();
+    error TranscriptNotFound();
+    error OnlyIssuerCanRevoke();
+    error AlreadyRevoked();
+    error StringTooLong();
+
+    uint256 public constant MAX_STRING_LENGTH = 64;
+
     InstitutionRegistry public registry;
-    mapping(bytes32 => Transcript) public transcripts; // documentHash => Transcript
+    mapping(bytes32 => Transcript) public transcripts;
 
     event TranscriptIssued(
         bytes32 indexed documentHash,
@@ -29,6 +39,7 @@ contract TranscriptRegistry {
     event TranscriptRevoked(bytes32 indexed documentHash, address indexed revokedBy);
 
     constructor(address registryAddress) {
+        if (registryAddress == address(0)) revert ZeroAddress();
         registry = InstitutionRegistry(registryAddress);
     }
 
@@ -38,8 +49,10 @@ contract TranscriptRegistry {
         string calldata studentId,
         string calldata program
     ) external {
-        require(registry.isIssuer(msg.sender), "Not an authorized issuer");
-        require(transcripts[documentHash].issuedAt == 0, "Hash already anchored");
+        if (!registry.isIssuer(msg.sender)) revert NotAnAuthorizedIssuer();
+        if (transcripts[documentHash].issuedAt != 0) revert HashAlreadyAnchored();
+        if (bytes(studentId).length == 0 || bytes(studentId).length > MAX_STRING_LENGTH) revert StringTooLong();
+        if (bytes(program).length == 0 || bytes(program).length > MAX_STRING_LENGTH) revert StringTooLong();
 
         transcripts[documentHash] = Transcript({
             documentHash: documentHash,
@@ -56,9 +69,9 @@ contract TranscriptRegistry {
 
     function revokeTranscript(bytes32 documentHash) external {
         Transcript storage t = transcripts[documentHash];
-        require(t.issuedAt != 0, "Transcript not found");
-        require(t.issuer == msg.sender, "Only issuer can revoke");
-        require(t.status == Status.Active, "Already revoked");
+        if (t.issuedAt == 0) revert TranscriptNotFound();
+        if (t.issuer != msg.sender) revert OnlyIssuerCanRevoke();
+        if (t.status == Status.Revoked) revert AlreadyRevoked();
 
         t.status = Status.Revoked;
         emit TranscriptRevoked(documentHash, msg.sender);

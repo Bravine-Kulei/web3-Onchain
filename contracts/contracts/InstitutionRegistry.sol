@@ -11,6 +11,14 @@ contract InstitutionRegistry {
         uint256 joinedAt;
     }
 
+    error ZeroAddress();
+    error NotAdmin();
+    error AlreadyRegistered();
+    error NotRegistered();
+    error StringTooLong();
+
+    uint256 public constant MAX_NAME_LENGTH = 128;
+
     address public admin;
     mapping(address => Institution) public institutions;
     address[] public institutionList;
@@ -19,12 +27,7 @@ contract InstitutionRegistry {
     event InstitutionDeactivated(address indexed addr);
 
     modifier onlyAdmin() {
-        require(msg.sender == admin, "Not admin");
-        _;
-    }
-
-    modifier onlyInstitution() {
-        require(institutions[msg.sender].active, "Not a registered institution");
+        if (msg.sender != admin) revert NotAdmin();
         _;
     }
 
@@ -33,13 +36,20 @@ contract InstitutionRegistry {
     }
 
     function addInstitution(address addr, string calldata name, Role role) external onlyAdmin {
-        require(!institutions[addr].active, "Already registered");
-        institutions[addr] = Institution(name, role, true, block.timestamp);
-        institutionList.push(addr);
+        if (addr == address(0)) revert ZeroAddress();
+        if (bytes(name).length == 0 || bytes(name).length > MAX_NAME_LENGTH) revert StringTooLong();
+        if (institutions[addr].active) revert AlreadyRegistered();
+
+        bool isNew = institutions[addr].joinedAt == 0;
+        institutions[addr] = Institution(name, role, true, isNew ? block.timestamp : institutions[addr].joinedAt);
+        if (isNew) {
+            institutionList.push(addr);
+        }
         emit InstitutionAdded(addr, name, role);
     }
 
     function deactivate(address addr) external onlyAdmin {
+        if (!institutions[addr].active) revert NotRegistered();
         institutions[addr].active = false;
         emit InstitutionDeactivated(addr);
     }
