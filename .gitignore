@@ -7,3 +7,4 @@ contracts/typechain-types/
 contracts/.env
 frontend/.env
 *.local
+.worktrees/
