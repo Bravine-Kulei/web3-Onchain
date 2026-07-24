@@ -15,6 +15,7 @@ import { MemberInstitutions } from './pages/admin/MemberInstitutions';
 import { NetworkNodes } from './pages/admin/NetworkNodes';
 import { AuditLog } from './pages/admin/AuditLog';
 import { PublicVerify } from './pages/PublicVerify';
+import { Setup } from './pages/Setup';
 import { Toaster } from 'sonner';
 export function App() {
   return (
@@ -24,6 +25,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/verify" element={<PublicVerify />} />
+          <Route path="/setup" element={<Setup />} />
 
           <Route element={<AppShell />}>
             {/* Student Routes */}

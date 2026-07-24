@@ -1,34 +1,45 @@
-import { verifySiweMessage, parseSiweMessage } from 'npm:viem@2.52.2'
+import { recoverMessageAddress } from 'npm:viem@2.52.2'
+import { parseSiweMessage, validateSiweMessage } from 'npm:viem@2.52.2/siwe'
 import { corsHeaders, jsonResponse, optionsResponse } from '../_shared/cors.ts'
 import { adminClient } from '../_shared/supabase.ts'
 import { createSessionToken } from '../_shared/session.ts'
+import { getSiweHealth } from './health.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return optionsResponse()
 
   try {
-    const { message, signature } = await req.json() as {
+    const body = await req.json() as {
+      health?: boolean
+      expectedDomain?: string
       message?: string
       signature?: `0x${string}`
     }
+    const secret = Deno.env.get('SIWE_SESSION_SECRET')
+    const domain = Deno.env.get('SIWE_DOMAIN')
+
+    if (body.health === true) {
+      return jsonResponse(getSiweHealth(secret, domain, body.expectedDomain))
+    }
+
+    const { message, signature } = body
 
     if (!message || !signature) {
       return jsonResponse({ error: 'message and signature required' }, 400)
     }
 
-    const secret = Deno.env.get('SIWE_SESSION_SECRET')
     if (!secret) return jsonResponse({ error: 'SIWE_SESSION_SECRET not configured' }, 500)
 
-    const domain = Deno.env.get('SIWE_DOMAIN')
-    const valid = await verifySiweMessage({
-      message,
-      signature,
+    const parsed = parseSiweMessage(message)
+    const recoveredAddress = await recoverMessageAddress({ message, signature })
+    const valid = validateSiweMessage({
+      message: parsed,
+      address: recoveredAddress,
       ...(domain ? { domain } : {}),
     })
 
     if (!valid) return jsonResponse({ error: 'Invalid SIWE signature' }, 401)
 
-    const parsed = parseSiweMessage(message)
     const address = parsed.address.toLowerCase()
     const nonce = parsed.nonce
 

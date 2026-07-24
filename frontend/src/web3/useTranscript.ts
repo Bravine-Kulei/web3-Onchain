@@ -4,7 +4,7 @@ import { getTranscriptRegistry } from './contracts'
 
 export { metadataHashInput }
 
-async function sha256(data: ArrayBuffer | Uint8Array): Promise<`0x${string}`> {
+async function sha256(data: ArrayBuffer): Promise<`0x${string}`> {
   const hashBuffer = await crypto.subtle.digest('SHA-256', data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return ('0x' + hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`
@@ -16,7 +16,7 @@ export async function hashFile(file: File): Promise<`0x${string}`> {
 }
 
 export async function hashString(str: string): Promise<`0x${string}`> {
-  return sha256(new TextEncoder().encode(str))
+  return sha256(Uint8Array.from(new TextEncoder().encode(str)).buffer)
 }
 
 export function useVerifyTranscript(documentHash: `0x${string}` | undefined) {

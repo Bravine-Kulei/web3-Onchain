@@ -15,6 +15,7 @@ export function RequestDetail() {
     if (!id) return;
     getRequestById(id)
       .then(setRequest)
+      .catch(err => { console.error('[RequestDetail] Failed to load request', err); setRequest(null); })
       .finally(() => setLoading(false));
   }, [id]);
 

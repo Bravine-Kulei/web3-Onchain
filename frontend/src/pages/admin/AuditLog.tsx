@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Search, Download, Loader2, RefreshCw } from 'lucide-react'
 import { OnChainReference } from '../../components/common/OnChainReference'
 import { toast } from 'sonner'
@@ -40,8 +40,8 @@ export function AuditLog() {
   const [typeFilter, setTypeFilter] = useState('')
   const publicClient = usePublicClient()
   const chainId = useChainId()
-  const transcriptRegistry = getTranscriptRegistry(chainId)
-  const institutionRegistry = getInstitutionRegistry(chainId)
+  const transcriptRegistry = useMemo(() => getTranscriptRegistry(chainId), [chainId])
+  const institutionRegistry = useMemo(() => getInstitutionRegistry(chainId), [chainId])
 
   const fetchEvents = useCallback(async () => {
     if (!publicClient || !transcriptRegistry || !institutionRegistry) { setLoading(false); return }
@@ -73,8 +73,8 @@ export function AuditLog() {
           id: `issued-${log.transactionHash}-${log.logIndex}`,
           timestamp: block ? new Date(Number(block.timestamp) * 1000).toISOString() : new Date().toISOString(),
           type: 'Issued',
-          actor: (log.args as any).issuer ?? '',
-          target: `${(log.args as any).studentId} — ${(log.args as any).program}`,
+          actor: log.args.issuer ?? '',
+          target: `${log.args.studentId ?? ''} — ${log.args.program ?? ''}`,
           txHash: log.transactionHash,
           blockNumber: log.blockNumber,
         })
@@ -86,8 +86,8 @@ export function AuditLog() {
           id: `revoked-${log.transactionHash}-${log.logIndex}`,
           timestamp: block ? new Date(Number(block.timestamp) * 1000).toISOString() : new Date().toISOString(),
           type: 'Revoked',
-          actor: (log.args as any).revokedBy ?? '',
-          target: ((log.args as any).documentHash as string)?.slice(0, 18) + '...',
+          actor: log.args.revokedBy ?? '',
+          target: `${log.args.documentHash?.slice(0, 18) ?? ''}...`,
           txHash: log.transactionHash,
           blockNumber: log.blockNumber,
         })
@@ -100,7 +100,7 @@ export function AuditLog() {
           timestamp: block ? new Date(Number(block.timestamp) * 1000).toISOString() : new Date().toISOString(),
           type: 'Institution Added',
           actor: 'Admin',
-          target: (log.args as any).name ?? (log.args as any).addr,
+          target: log.args.name ?? log.args.addr ?? '',
           txHash: log.transactionHash,
           blockNumber: log.blockNumber,
         })
@@ -115,30 +115,30 @@ export function AuditLog() {
     } finally {
       setLoading(false)
     }
-  }, [publicClient, chainId, transcriptRegistry, institutionRegistry])
+  }, [publicClient, transcriptRegistry, institutionRegistry])
 
-  useEffect(() => { fetchEvents() }, [fetchEvents])
+  useEffect(() => { void fetchEvents() }, [fetchEvents])
 
   // Watch for new events in real-time
   useWatchContractEvent({
     address: transcriptRegistry?.address,
     abi: transcriptRegistry?.abi,
     eventName: 'TranscriptIssued',
-    onLogs: () => fetchEvents(),
+    onLogs: () => { void fetchEvents() },
     batch: true,
   })
   useWatchContractEvent({
     address: transcriptRegistry?.address,
     abi: transcriptRegistry?.abi,
     eventName: 'TranscriptRevoked',
-    onLogs: () => fetchEvents(),
+    onLogs: () => { void fetchEvents() },
     batch: true,
   })
   useWatchContractEvent({
     address: institutionRegistry?.address,
     abi: institutionRegistry?.abi,
     eventName: 'InstitutionAdded',
-    onLogs: () => fetchEvents(),
+    onLogs: () => { void fetchEvents() },
     batch: true,
   })
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Building2, Plus, Search, Loader2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePublicClient, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi'
@@ -7,6 +7,7 @@ import { ChainGuard } from '../../components/common/ChainGuard'
 import { getInstitutionRegistry } from '../../web3/contracts'
 import { parseContractError } from '../../web3/errors'
 import { useWalletRole } from '../../web3/useWalletRole'
+import { parseInstitutionTuple } from '../../web3/institution'
 
 const ROLE_LABELS: Record<number, string> = { 0: 'None', 1: 'Issuer', 2: 'Verifier', 3: 'Both' }
 
@@ -30,14 +31,15 @@ export function MemberInstitutions() {
   const [newRole, setNewRole] = useState(3)
 
   const chainId = useChainId()
-  const registry = getInstitutionRegistry(chainId)
+  const registry = useMemo(() => getInstitutionRegistry(chainId), [chainId])
   const publicClient = usePublicClient()
   const { isAdmin } = useWalletRole()
   const { writeContract, data: txHash, isPending, error: writeError } = useWriteContract()
   const { isSuccess } = useWaitForTransactionReceipt({ hash: txHash })
-  const [lastAction, setLastAction] = useState<'add' | 'deactivate' | null>(null)
+  const lastAction = useRef<'add' | 'deactivate' | null>(null)
+  const addedInstitutionName = useRef('')
 
-  const fetchInstitutions = async () => {
+  const fetchInstitutions = useCallback(async () => {
     if (!publicClient || !registry) { setLoading(false); return }
     try {
       const addrs = await publicClient.readContract({
@@ -46,19 +48,17 @@ export function MemberInstitutions() {
       }) as string[]
 
       const details = await Promise.all(
-        addrs.map(addr =>
-          publicClient.readContract({
+        addrs.map(async addr => {
+          const data = await publicClient.readContract({
             ...registry,
             functionName: 'institutions',
             args: [addr],
-          }).then((data: any) => ({
+          })
+          return {
             address: addr,
-            name: data[0] as string,
-            role: Number(data[1]),
-            active: data[2] as boolean,
-            joinedAt: Number(data[3]) * 1000,
-          }))
-        )
+            ...parseInstitutionTuple(data),
+          }
+        })
       )
       setInstitutions(details.filter(i => i.active))
     } catch (err) {
@@ -68,24 +68,25 @@ export function MemberInstitutions() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [publicClient, registry])
 
-  useEffect(() => { fetchInstitutions() }, [publicClient, chainId])
+  useEffect(() => { void fetchInstitutions() }, [fetchInstitutions])
 
   useEffect(() => {
-    if (isSuccess) {
-      if (lastAction === 'deactivate') {
-        toast.success('Institution deactivated')
-        setDeactivatingAddr(null)
-      } else {
-        toast.success(`Institution added`, { description: newName })
-        setShowAddModal(false)
-        setNewAddr(''); setNewName(''); setNewRole(3)
-      }
-      setLastAction(null)
-      fetchInstitutions()
+    if (!isSuccess || !lastAction.current) return
+    const completedAction = lastAction.current
+    const completedInstitutionName = addedInstitutionName.current
+    lastAction.current = null
+    if (completedAction === 'deactivate') {
+      toast.success('Institution deactivated')
+      setDeactivatingAddr(null)
+    } else {
+      toast.success('Institution added', { description: completedInstitutionName })
+      setShowAddModal(false)
+      setNewAddr(''); setNewName(''); setNewRole(3)
     }
-  }, [isSuccess])
+    void fetchInstitutions()
+  }, [fetchInstitutions, isSuccess])
 
   useEffect(() => {
     if (writeError) {
@@ -106,7 +107,8 @@ export function MemberInstitutions() {
       functionName: 'addInstitution',
       args: [newAddr, newName, newRole],
     })
-    setLastAction('add')
+    lastAction.current = 'add'
+    addedInstitutionName.current = newName
   }
 
   const handleDeactivate = (addr: string, name: string) => {
@@ -116,7 +118,7 @@ export function MemberInstitutions() {
     }
     if (!confirm(`Deactivate ${name}? They will no longer be able to issue or verify.`)) return
     setDeactivatingAddr(addr)
-    setLastAction('deactivate')
+    lastAction.current = 'deactivate'
     writeContract({
       ...registry,
       functionName: 'deactivate',

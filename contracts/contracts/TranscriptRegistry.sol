@@ -17,6 +17,7 @@ contract TranscriptRegistry {
     }
 
     error ZeroAddress();
+    error InvalidDocumentHash();
     error NotAnAuthorizedIssuer();
     error HashAlreadyAnchored();
     error TranscriptNotFound();
@@ -50,6 +51,8 @@ contract TranscriptRegistry {
         string calldata program
     ) external {
         if (!registry.isIssuer(msg.sender)) revert NotAnAuthorizedIssuer();
+        if (documentHash == bytes32(0)) revert InvalidDocumentHash();
+        if (recipient == address(0)) revert ZeroAddress();
         if (transcripts[documentHash].issuedAt != 0) revert HashAlreadyAnchored();
         if (bytes(studentId).length == 0 || bytes(studentId).length > MAX_STRING_LENGTH) revert StringTooLong();
         if (bytes(program).length == 0 || bytes(program).length > MAX_STRING_LENGTH) revert StringTooLong();

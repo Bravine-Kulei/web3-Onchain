@@ -8,7 +8,7 @@
     "node": "hardhat node",
     "deploy": "hardhat run scripts/deploy.ts --network localhost",
     "deploy:amoy": "hardhat run scripts/deploy.ts --network amoy",
-    "sync": "hardhat run scripts/sync-artifacts.ts"
+    "sync": "hardhat run --no-compile scripts/sync-artifacts.ts"
   },
   "dependencies": {
     "@transcrypt/shared": "file:../shared"

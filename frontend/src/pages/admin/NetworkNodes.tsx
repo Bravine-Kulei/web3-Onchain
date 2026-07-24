@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Activity, Server, Clock, Shield, Loader2, RefreshCw } from 'lucide-react'
 import { usePublicClient, useChainId } from 'wagmi'
 import { ChainGuard } from '../../components/common/ChainGuard'
@@ -6,6 +6,7 @@ import { getInstitutionRegistry, getChainDeployment } from '../../web3/contracts
 import { expectedChainId, expectedChainName } from '../../web3/config'
 import { parseReadError } from '../../web3/errors'
 import { toast } from 'sonner'
+import { parseInstitutionTuple } from '../../web3/institution'
 
 interface NodeInfo {
   address: string
@@ -24,10 +25,10 @@ export function NetworkNodes() {
 
   const chainId = useChainId()
   const publicClient = usePublicClient()
-  const registry = getInstitutionRegistry(chainId)
+  const registry = useMemo(() => getInstitutionRegistry(chainId), [chainId])
   const deployment = getChainDeployment(chainId)
 
-  const fetchNetwork = async () => {
+  const fetchNetwork = useCallback(async () => {
     if (!publicClient || !registry) { setLoading(false); return }
     setLoading(true)
     try {
@@ -38,19 +39,17 @@ export function NetworkNodes() {
       setBlockNumber(block)
 
       const details = await Promise.all(
-        addrs.map(addr =>
-          publicClient.readContract({
+        addrs.map(async addr => {
+          const data = await publicClient.readContract({
             ...registry,
             functionName: 'institutions',
             args: [addr],
-          }).then((data: readonly [string, number, boolean, bigint]) => ({
+          })
+          return {
             address: addr,
-            name: data[0],
-            role: Number(data[1]),
-            active: data[2],
-            joinedAt: Number(data[3]) * 1000,
-          }))
-        )
+            ...parseInstitutionTuple(data),
+          }
+        })
       )
       setNodes(details)
     } catch (err) {
@@ -59,9 +58,9 @@ export function NetworkNodes() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [publicClient, registry])
 
-  useEffect(() => { fetchNetwork() }, [publicClient, chainId])
+  useEffect(() => { void fetchNetwork() }, [fetchNetwork])
 
   const networkHealthy = chainId === expectedChainId && !!deployment
 

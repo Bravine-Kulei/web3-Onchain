@@ -8,6 +8,7 @@ export interface ChainDeployment {
   transcriptRegistry: `0x${string}`
   network: string
   deployedAt: string
+  seededInstitutions?: { wallet: string; name: string; role: string }[]
   seededTranscripts?: { requestId: string; documentHash: string; status: string }[]
 }
 

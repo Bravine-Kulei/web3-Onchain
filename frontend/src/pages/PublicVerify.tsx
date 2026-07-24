@@ -136,7 +136,7 @@ export function PublicVerify() {
 
         {!deployment && (
           <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            No contracts deployed on this network. Run <code className="font-mono bg-red-100 px-1 rounded">npm run deploy:local</code> first.
+            No contracts deployed on this network. Run <code className="font-mono bg-red-100 px-1 rounded">pnpm run deploy:local</code> first.
           </div>
         )}
 

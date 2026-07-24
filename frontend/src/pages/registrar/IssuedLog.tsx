@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Search, ShieldAlert, Loader2 } from 'lucide-react'
 import { StatusBadge } from '../../components/common/StatusBadge'
 import { OnChainReference } from '../../components/common/OnChainReference'
@@ -8,9 +8,9 @@ import { useAccount } from 'wagmi'
 import { useRevokeTranscript, hashString, metadataHashInput } from '../../web3/useTranscript'
 import { parseContractError } from '../../web3/errors'
 import { useWalletRole } from '../../web3/useWalletRole'
-import { getRequests, updateRequestStatus, type TransferRequest } from '../../lib/db'
-import { SecureWriteError } from '../../lib/secureApi'
+import { getRequests, type TransferRequest } from '../../lib/db'
 import { useSiweAuth } from '../../lib/siweAuth'
+import { createRequestSync, loadPendingRequestSync, retryPendingRequestSync, type PendingRequestSync, type RequestSyncContext } from '../../lib/requestSync'
 
 export function IssuedLog() {
   const [requests, setRequests] = useState<TransferRequest[]>([])
@@ -19,23 +19,69 @@ export function IssuedLog() {
   const [statusFilter, setStatusFilter] = useState('')
   const [showRevokeModal, setShowRevokeModal] = useState(false)
   const [selectedRequest, setSelectedRequest] = useState<TransferRequest | null>(null)
+  const [pendingSyncs, setPendingSyncs] = useState<Record<string, PendingRequestSync>>({})
+  const [retryingRequestId, setRetryingRequestId] = useState<string | null>(null)
+  const [isReconciling, setIsReconciling] = useState(false)
+  const [storageLoadErrors, setStorageLoadErrors] = useState<Record<string, true>>({})
+  const [cleanupPending, setCleanupPending] = useState<Record<string, true>>({})
+  const reconciledTransactions = useRef(new Set<string>())
+  const revokeSnapshot = useRef<null | { requestId: string; context: RequestSyncContext }>(null)
+  const requestLoadGeneration = useRef(0)
 
-  const { isConnected } = useAccount()
+  const { isConnected, address, chainId } = useAccount()
   const { isIssuer, hasRegistry } = useWalletRole()
   const { isAuthenticated, signIn, requiresAuth } = useSiweAuth()
   const { revoke, isPending, isSuccess, txHash, error, hasContract } = useRevokeTranscript()
   const canRevoke = isConnected && isIssuer && hasContract && hasRegistry
+  const syncContext = useMemo<RequestSyncContext | null>(
+    () => address && chainId ? { chainId, account: address.toLowerCase() } : null,
+    [address, chainId],
+  )
 
   useEffect(() => {
+    const generation = ++requestLoadGeneration.current
+    let cancelled = false
+    setLoading(true)
+    setRequests([])
+    setPendingSyncs({})
+    setStorageLoadErrors({})
+    setCleanupPending({})
     getRequests({ status: ['Anchored', 'Available', 'Verified', 'Revoked'] })
-      .then(setRequests)
-      .finally(() => setLoading(false))
-  }, [])
+      .then(items => {
+        if (cancelled || generation !== requestLoadGeneration.current) return
+        setRequests(items)
+        const restored: Record<string, PendingRequestSync> = {}
+        const readErrors: Record<string, true> = {}
+        for (const item of items) {
+          if (!syncContext) { readErrors[item.request_id] = true; continue }
+          const loaded = loadPendingRequestSync(item.request_id, 'Revoked', syncContext)
+          if (loaded.state === 'loaded') restored[item.request_id] = loaded.pending
+          if (loaded.state === 'storage-error') readErrors[item.request_id] = true
+        }
+        setPendingSyncs(restored)
+        setStorageLoadErrors(readErrors)
+      })
+      .finally(() => {
+        if (!cancelled && generation === requestLoadGeneration.current) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+      requestLoadGeneration.current += 1
+    }
+  }, [syncContext])
 
   useEffect(() => {
-    if (isSuccess && selectedRequest) {
-      updateRequestStatus(selectedRequest.request_id, 'Revoked', { tx_hash: txHash })
-        .then(() => {
+    const snapshot = revokeSnapshot.current
+    if (isSuccess && selectedRequest && snapshot && snapshot.requestId === selectedRequest.request_id && txHash && !reconciledTransactions.current.has(txHash)) {
+      reconciledTransactions.current.add(txHash)
+      setIsReconciling(true)
+      createRequestSync({
+        requestId: snapshot.requestId,
+        status: 'Revoked',
+        chainTxHash: txHash,
+      }, snapshot.context).then(result => {
+        setIsReconciling(false)
+        if (result.state === 'synced') {
           setRequests(prev =>
             prev.map(r =>
               r.request_id === selectedRequest.request_id ? { ...r, status: 'Revoked' } : r
@@ -46,13 +92,53 @@ export function IssuedLog() {
           })
           setShowRevokeModal(false)
           setSelectedRequest(null)
+          return
+        }
+        setPendingSyncs(prev => ({ ...prev, [selectedRequest.request_id]: result.pending }))
+        if (result.state === 'synced-storage-cleanup-pending') {
+          setCleanupPending(prev => ({ ...prev, [selectedRequest.request_id]: true }))
+          setRequests(prev => prev.map(r => r.request_id === selectedRequest.request_id ? { ...r, status: 'Revoked' } : r))
+        }
+        toast.error('Revoked on-chain; database sync is pending', {
+          description: result.state === 'storage-failed'
+            ? 'Keep this page open and retry; the browser could not save the retry data.'
+            : 'Retry below. No second blockchain transaction will be sent.',
         })
-        .catch((err: unknown) => {
-          const msg = err instanceof SecureWriteError ? err.message : 'On-chain revoke succeeded but status update failed'
-          toast.error(msg, { description: 'Sign in with your issuer wallet and retry.' })
-        })
+        setShowRevokeModal(false)
+        setSelectedRequest(null)
+      })
     }
-  }, [isSuccess])
+  }, [isSuccess, selectedRequest, txHash])
+
+  const retryDatabaseSync = async (pending: PendingRequestSync) => {
+    if (!syncContext) return
+    setRetryingRequestId(pending.requestId)
+    const result = await retryPendingRequestSync(pending, syncContext)
+    setRetryingRequestId(null)
+    if (result.state === 'synced') {
+      setPendingSyncs(prev => {
+        const next = { ...prev }
+        delete next[pending.requestId]
+        return next
+      })
+      setRequests(prev => prev.map(r => r.request_id === pending.requestId ? { ...r, status: 'Revoked' } : r))
+      setCleanupPending(prev => {
+        const next = { ...prev }
+        delete next[pending.requestId]
+        return next
+      })
+      toast.success(`Transcript ${pending.requestId} database status synchronized`)
+    } else {
+      setPendingSyncs(prev => ({ ...prev, [pending.requestId]: result.pending }))
+      setCleanupPending(prev => {
+        const next = { ...prev }
+        if (result.state === 'synced-storage-cleanup-pending') next[pending.requestId] = true
+        else delete next[pending.requestId]
+        return next
+      })
+      toast.error('Database sync is still pending')
+    }
+  }
 
   useEffect(() => {
     if (error) {
@@ -62,6 +148,12 @@ export function IssuedLog() {
   }, [error])
 
   const handleRevokeClick = (req: TransferRequest) => {
+    const chainSuccessUnreconciled = isSuccess && !!txHash && !reconciledTransactions.current.has(txHash)
+    if (isReconciling || chainSuccessUnreconciled) return
+    if (pendingSyncs[req.request_id] || storageLoadErrors[req.request_id]) {
+      toast.error('Database sync is pending', { description: 'Retry the existing revocation update instead of revoking again.' })
+      return
+    }
     if (!canRevoke) {
       toast.error('Not an authorized issuer', {
         description: 'Connect the issuing institution wallet to revoke transcripts.',
@@ -74,6 +166,8 @@ export function IssuedLog() {
 
   const confirmRevoke = async () => {
     if (!selectedRequest) return
+    const chainSuccessUnreconciled = isSuccess && !!txHash && !reconciledTransactions.current.has(txHash)
+    if (isReconciling || chainSuccessUnreconciled || pendingSyncs[selectedRequest.request_id] || storageLoadErrors[selectedRequest.request_id] || !syncContext) return
     if (!canRevoke) {
       toast.error('Not an authorized issuer')
       return
@@ -90,6 +184,7 @@ export function IssuedLog() {
         metadataHashInput(selectedRequest.request_id, selectedRequest.student_id, selectedRequest.program)
       )
     }
+    revokeSnapshot.current = { requestId: selectedRequest.request_id, context: syncContext }
     revoke(docHash)
   }
 
@@ -117,6 +212,31 @@ export function IssuedLog() {
           </p>
         )}
       </div>
+
+      {Object.values(pendingSyncs).map(pending => (
+        <div key={pending.requestId} role="alert" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 text-sm text-amber-950">
+          <div className="font-semibold">
+            {cleanupPending[pending.requestId]
+              ? `Database sync succeeded for ${pending.requestId}, but saved retry metadata could not be cleared.`
+              : `Revocation confirmed on-chain; database sync pending for ${pending.requestId}.`}
+          </div>
+          <div className="mt-1">Transaction: <span className="font-mono break-all">{pending.chainTxHash}</span></div>
+          <p className="mt-1">{cleanupPending[pending.requestId]
+            ? 'The chain and database are authoritative. Retry only clears local session metadata.'
+            : 'Retry updates Supabase only and will not broadcast another revocation.'}</p>
+          <button onClick={() => retryDatabaseSync(pending)} disabled={retryingRequestId === pending.requestId}
+            className="mt-3 rounded-lg bg-amber-900 px-4 py-2 font-medium text-white disabled:opacity-60">
+            {retryingRequestId === pending.requestId ? 'Retrying...' : cleanupPending[pending.requestId] ? 'Clear saved retry metadata' : 'Retry database sync'}
+          </button>
+        </div>
+      ))}
+
+      {Object.keys(storageLoadErrors).length > 0 && (
+        <div role="alert" className="rounded-xl border border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950">
+          <div className="font-semibold">Some pending revocation sync state could not be read from this browser.</div>
+          <p className="mt-1">Revocation is disabled for: {Object.keys(storageLoadErrors).join(', ')}. Restore session storage access, then reload.</p>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -187,10 +307,10 @@ export function IssuedLog() {
                       {req.status !== 'Revoked' && (
                         <button
                           onClick={() => handleRevokeClick(req)}
-                          disabled={!canRevoke}
+                          disabled={!canRevoke || isReconciling || (isSuccess && !!txHash && !reconciledTransactions.current.has(txHash)) || !!pendingSyncs[req.request_id] || !!storageLoadErrors[req.request_id]}
                           className="text-red-600 hover:text-red-800 font-medium text-xs uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          Revoke
+                          {pendingSyncs[req.request_id] ? 'Sync pending' : storageLoadErrors[req.request_id] ? 'Storage unavailable' : 'Revoke'}
                         </button>
                       )}
                     </td>
@@ -233,7 +353,7 @@ export function IssuedLog() {
               </button>
               <button
                 onClick={confirmRevoke}
-                disabled={isPending || !canRevoke}
+                disabled={isPending || isReconciling || (isSuccess && !!txHash && !reconciledTransactions.current.has(txHash)) || !canRevoke}
                 className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 disabled:opacity-70"
               >
                 {isPending ? (

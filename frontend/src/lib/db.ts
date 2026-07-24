@@ -6,6 +6,8 @@ import {
   secureRecordVerification,
   SecureWriteError,
 } from './secureApi'
+import { AUTH_BYPASS, edgeFetch } from './siweAuth'
+import { getSessionToken } from './siweSession'
 
 export type RequestStatus =
   | 'Pending'
@@ -37,6 +39,12 @@ export interface TransferRequest {
   ipfs_cid?: string
   issue_date?: string
   history: { stage: string; timestamp: string }[]
+}
+
+export interface RequestUpdateResult {
+  requestId: string
+  status: RequestStatus
+  syncedAt: string
 }
 
 // ── Requests ────────────────────────────────────────────────
@@ -134,8 +142,8 @@ export async function getRequestById(requestId: string): Promise<TransferRequest
     .from('requests')
     .select('*')
     .eq('request_id', requestId)
-    .single()
-  if (error) { console.error('[DB] getRequestById:', error); return null }
+    .maybeSingle()
+  if (error) throw error
   return data
 }
 
@@ -165,7 +173,7 @@ export async function getRequestByHash(documentHash: string): Promise<TransferRe
     .ilike('document_hash', documentHash)
     .limit(1)
     .maybeSingle()
-  if (error) { console.error('[DB] getRequestByHash:', error); return null }
+  if (error) throw error
   return data
 }
 
@@ -173,13 +181,16 @@ export async function updateRequestStatus(
   requestId: string,
   status: RequestStatus,
   extra?: { tx_hash?: string; block_number?: number; document_hash?: string; ipfs_cid?: string; issue_date?: string }
-): Promise<void> {
-  if (!isSupabaseConfigured) return
+): Promise<RequestUpdateResult> {
+  if (!isSupabaseConfigured) {
+    return { requestId, status, syncedAt: new Date().toISOString() }
+  }
   try {
-    await secureUpdateRequestStatus(requestId, status, extra)
+    return await secureUpdateRequestStatus(requestId, status, extra)
   } catch (err) {
     if (err instanceof SecureWriteError) throw err
     console.error('[DB] updateRequestStatus:', err)
+    throw err
   }
 }
 
@@ -189,6 +200,7 @@ export type VerifyResultValue = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND
 
 export interface VerificationRecord {
   id: string
+  attempt_id?: string
   request_id?: string
   transcript_input?: string
   verifier_wallet?: string
@@ -203,12 +215,17 @@ export interface VerificationRecord {
 export async function recordVerification(
   rec: Omit<VerificationRecord, 'id' | 'created_at'>
 ): Promise<void> {
-  if (!isSupabaseConfigured) return
   await secureRecordVerification(rec)
 }
 
 export async function getVerifications(): Promise<VerificationRecord[]> {
   if (!isSupabaseConfigured) return []
+  if (!AUTH_BYPASS) {
+    const session = getSessionToken()
+    if (!session) throw new SecureWriteError('Sign in with your wallet to view verification history', 'UNAUTHORIZED')
+    const response = await edgeFetch<{ verifications: VerificationRecord[] }>('get-verifications', { method: 'GET', session })
+    return response.verifications ?? []
+  }
   const { data, error } = await supabase
     .from('verifications')
     .select('*')
@@ -219,16 +236,30 @@ export async function getVerifications(): Promise<VerificationRecord[]> {
 
 export function subscribeToRequests(
   onUpdate: (req: TransferRequest) => void,
-  _filter?: { sourceInstitution?: string; destInstitution?: string }
+  filter?: { sourceInstitution?: string; destInstitution?: string }
 ) {
-  if (!isSupabaseConfigured) return () => {}
+  if (!isSupabaseConfigured) return () => undefined
+  const realtimeFilter = filter?.sourceInstitution
+    ? `source_institution=eq.${filter.sourceInstitution}`
+    : filter?.destInstitution
+      ? `dest_institution=eq.${filter.destInstitution}`
+      : undefined
+  const handlePayload = (payload: { new: unknown }) => {
+    const request = payload.new as TransferRequest
+    if (filter?.sourceInstitution && request.source_institution !== filter.sourceInstitution) return
+    if (filter?.destInstitution && request.dest_institution !== filter.destInstitution) return
+    onUpdate(request)
+  }
+  const postgresChanges = <T extends 'INSERT' | 'UPDATE'>(event: T) => ({
+    event,
+    schema: 'public',
+    table: 'requests',
+    ...(realtimeFilter ? { filter: realtimeFilter } : {}),
+  } as const)
   const channel = supabase
     .channel('requests-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'requests' },
-      payload => onUpdate(payload.new as TransferRequest)
-    )
+    .on('postgres_changes', postgresChanges('INSERT'), handlePayload)
+    .on('postgres_changes', postgresChanges('UPDATE'), handlePayload)
     .subscribe()
-  return () => supabase.removeChannel(channel)
+  return () => { void supabase.removeChannel(channel) }
 }

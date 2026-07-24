@@ -1,0 +1,13 @@
+# Supabase CLI config — run `supabase link --project-ref YOUR_PROJECT_ID` first.
+# Docs: https://supabase.com/docs/guides/cli
+
+project_id = "transcrypt"
+
+[api]
+enabled = true
+
+[db]
+major_version = 15
+
+[functions]
+# Edge Functions live in supabase/functions/

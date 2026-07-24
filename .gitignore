@@ -8,3 +8,4 @@ contracts/.env
 frontend/.env
 *.local
 .worktrees/
+supabase/.temp/

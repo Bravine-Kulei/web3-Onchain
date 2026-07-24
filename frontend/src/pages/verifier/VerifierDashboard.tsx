@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import {
   UploadCloud, Search, CheckCircle2, XCircle,
   AlertTriangle, FileText, ShieldCheck,
@@ -11,9 +11,12 @@ import { hashFile } from '../../web3/useTranscript'
 import { verifyOnChain } from '../../web3/verifyOnChain'
 import { parseReadError } from '../../web3/errors'
 import { getTranscriptRegistry } from '../../web3/contracts'
-import { getRequestById, getRequestByHash, recordVerification, type TransferRequest } from '../../lib/db'
+import { getRequestById, getRequestByHash, recordVerification, type TransferRequest, type VerifyResultValue } from '../../lib/db'
+import { authoritativeAcademicFields, classifyVerification, normalizeVerificationHash } from '../../lib/verification'
+import { VerificationRunCoordinator } from '../../lib/verificationRun'
 
-type VerifyResult = 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | 'CHAIN_ERROR' | null
+type VerifyResult = VerifyResultValue | null
+type AuditPayload = Parameters<typeof recordVerification>[0]
 
 interface VerifyRecord {
   studentId: string
@@ -29,7 +32,7 @@ interface VerifyRecord {
 }
 
 function isHexHash(value: string): value is `0x${string}` {
-  return /^0x[0-9a-fA-F]{64}$/.test(value)
+  return /^0x[0-9a-f]{64}$/i.test(value)
 }
 
 const cardVariants = {
@@ -46,9 +49,80 @@ export function VerifierDashboard() {
   const [result, setResult] = useState<VerifyResult>(null)
   const [record, setRecord] = useState<VerifyRecord | null>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [auditStatus, setAuditStatus] = useState<'idle' | 'pending' | 'logged' | 'error'>('idle')
+  const [auditPayload, setAuditPayload] = useState<AuditPayload | null>(null)
   const publicClient = usePublicClient()
   const chainId = useChainId()
   const { address } = useAccount()
+  const activeRunToken = useRef(0)
+  const activeAttemptId = useRef('')
+  const coordinator = useRef<VerificationRunCoordinator<AuditPayload> | null>(null)
+  if (!coordinator.current) {
+    coordinator.current = new VerificationRunCoordinator(recordVerification, state => {
+      setAuditStatus(state)
+      if (state === 'error') toast.error('Verification completed, but its audit log was not saved.')
+    })
+  }
+  const runCoordinator = coordinator.current
+  const isActiveRun = (run: number) => runCoordinator.isActive(run)
+
+  const beginVerification = () => {
+    const started = runCoordinator.begin()
+    const run = started.token
+    activeRunToken.current = run
+    activeAttemptId.current = started.attemptId
+    setIsVerifying(true)
+    setResult(null)
+    setRecord(null)
+    setAuditStatus('idle')
+    setAuditPayload(null)
+    return run
+  }
+
+  const clearVerification = () => {
+    runCoordinator.cancel()
+    setIsVerifying(false)
+    setVerifyStep(0)
+    setResult(null)
+    setRecord(null)
+    setAuditStatus('idle')
+    setAuditPayload(null)
+  }
+
+  const finishVerification = (
+    run: number,
+    resultValue: VerifyResultValue,
+    rec: VerifyRecord | null,
+    docHash?: `0x${string}`,
+  ) => {
+    if (!runCoordinator.claimCompletion(run)) return
+    setIsVerifying(false)
+    setVerifyStep(0)
+    setResult(resultValue)
+    setRecord(rec)
+    const payload: AuditPayload = {
+          attempt_id: activeAttemptId.current,
+          request_id: rec?.transcriptId,
+          verifier_wallet: address,
+          result: resultValue,
+          doc_hash: docHash ?? rec?.docHash,
+          tx_hash: rec?.txHash,
+        }
+    setAuditPayload(payload)
+    runCoordinator.persistAudit(run, payload)
+  }
+
+  const classifyNotFound = (run: number, expectedHash?: string) => {
+    const classification = classifyVerification({ exists: false, revoked: false, expectedHash })
+    finishVerification(run, classification, null)
+  }
+
+  const stopWithLocalError = (run: number, message: string) => {
+    if (!isActiveRun(run)) return
+    toast.error(message)
+    setIsVerifying(false)
+    setVerifyStep(0)
+  }
 
   // Verify by transcript ID / hash. If a file is attached, also runs tamper detection
   // by comparing the file's SHA-256 against the hash stored for that record.
@@ -57,150 +131,169 @@ export function VerifierDashboard() {
     const input = verifyId.trim()
     if (!input) return
 
-    setIsVerifying(true)
-    setResult(null)
-    setRecord(null)
+    const run = beginVerification()
+
+    if (/^0x/i.test(input) && !isHexHash(input)) {
+      classifyNotFound(run, input)
+      return
+    }
 
     // Raw 0x document hash → query chain directly
     if (isHexHash(input)) {
-      await queryChain(input, idFile?.name, undefined, input)
+      if (idFile) {
+        setVerifyStep(1)
+        let fileHash: `0x${string}`
+        try {
+          fileHash = await hashFile(idFile)
+          if (!isActiveRun(run)) return
+        } catch {
+          stopWithLocalError(run, 'Could not read this document. Choose a valid PDF or JSON file and try again.')
+          return
+        }
+        await queryChain(run, input, idFile.name, undefined, fileHash)
+        if (!isActiveRun(run)) return
+        return
+      }
+      await queryChain(run, input)
+      if (!isActiveRun(run)) return
       return
     }
 
     // Transcript ID → resolve the anchored hash from the off-chain registry
     setVerifyStep(2)
-    const req = await getRequestById(input)
-    if (!req || !req.document_hash) {
-      setIsVerifying(false)
-      setVerifyStep(0)
-      setResult('NOT_FOUND')
-      logVerification('NOT_FOUND', null, input)
+    let req: TransferRequest | null
+    try {
+      req = await getRequestById(input)
+      if (!isActiveRun(run)) return
+    } catch {
+      stopWithLocalError(run, 'Could not look up that transcript ID. Check your connection and try again.')
       return
     }
-    const expected = req.document_hash as `0x${string}`
+    if (!req || !req.document_hash) {
+      classifyNotFound(run)
+      return
+    }
+    let expected: `0x${string}`
+    try {
+      expected = normalizeVerificationHash(req.document_hash)
+    } catch {
+      classifyNotFound(run, req.document_hash)
+      return
+    }
 
     // Tamper detection: a supplied file must hash to the anchored value
     if (idFile) {
       setVerifyStep(1)
-      const fileHash = await hashFile(idFile)
-      if (fileHash.toLowerCase() !== expected.toLowerCase()) {
-        setIsVerifying(false)
-        setVerifyStep(0)
-        const rec: VerifyRecord = {
-          studentId: req.student_id,
-          program: req.program,
-          issuerAddress: req.source_institution_address ?? '',
-          docHash: fileHash,
-          fileName: idFile.name,
-          transcriptId: req.request_id,
-          studentName: req.student_name,
-          sourceInstitution: req.source_institution,
-        }
-        setResult('TAMPERED')
-        setRecord(rec)
-        logVerification('TAMPERED', rec, input)
+      let fileHash: `0x${string}`
+      try {
+        fileHash = await hashFile(idFile)
+        if (!isActiveRun(run)) return
+      } catch {
+        stopWithLocalError(run, 'Could not read this document. Choose a valid PDF or JSON file and try again.')
         return
       }
+      await queryChain(run, expected, idFile.name, req, fileHash)
+      if (!isActiveRun(run)) return
+      return
     }
 
-    await queryChain(expected, idFile?.name, req, input)
-  }
-
-  const logVerification = (
-    resultValue: 'VERIFIED' | 'TAMPERED' | 'REVOKED' | 'NOT_FOUND' | 'CHAIN_ERROR',
-    rec: VerifyRecord | null,
-    input?: string,
-  ) => {
-    recordVerification({
-      request_id: rec?.transcriptId,
-      transcript_input: input || rec?.transcriptId || rec?.fileName,
-      verifier_wallet: address,
-      student_name: rec?.studentName,
-      source_institution: rec?.sourceInstitution,
-      result: resultValue,
-      doc_hash: rec?.docHash,
-      tx_hash: rec?.txHash,
-    })
+    await queryChain(run, expected, undefined, req)
+    if (!isActiveRun(run)) return
   }
 
   const handleVerifyFile = async () => {
     if (!uploadedFile) return
-    setIsVerifying(true)
-    setResult(null)
-    setRecord(null)
+    const run = beginVerification()
     setVerifyStep(1)
+    let hash: `0x${string}`
     try {
-      const hash = await hashFile(uploadedFile)
-      const req = await getRequestByHash(hash)
-      await queryChain(hash, uploadedFile.name, req ?? undefined, uploadedFile.name)
+      hash = await hashFile(uploadedFile)
+      if (!isActiveRun(run)) return
     } catch {
-      toast.error('Failed to hash file')
-      setIsVerifying(false)
-      setVerifyStep(0)
+      stopWithLocalError(run, 'Could not read this document. Choose a valid PDF or JSON file and try again.')
+      return
+    }
+    let req: TransferRequest | null = null
+    try {
+      req = await getRequestByHash(hash)
+      if (!isActiveRun(run)) return
+    } catch {
+      if (!isActiveRun(run)) return
+      toast.warning('Document details are unavailable; verifying its fingerprint on-chain instead.')
+    }
+    await queryChain(run, hash, uploadedFile.name, req ?? undefined)
+    if (!isActiveRun(run)) return
+  }
+
+  const readChain = async (run: number, docHash: `0x${string}`) => {
+    try {
+      if (!publicClient) throw new Error('No chain connection')
+      if (!getTranscriptRegistry(chainId)) throw new Error('No chain connection')
+      if (!isActiveRun(run)) return null
+      setVerifyStep(3)
+      const chainRecord = await verifyOnChain(publicClient, chainId, docHash)
+      if (!isActiveRun(run)) return null
+      return chainRecord
+    } catch (err) {
+      if (!isActiveRun(run)) return null
+      const parsed = parseReadError(err)
+      toast.error(parsed.title, { description: parsed.description })
+      finishVerification(run, 'CHAIN_ERROR', null)
+      return null
     }
   }
 
   const queryChain = async (
+    run: number,
     docHash: `0x${string}`,
     fileName?: string,
     req?: TransferRequest,
-    inputLabel?: string,
+    suppliedHash?: string,
   ) => {
+    if (!isActiveRun(run)) return
+    let normalizedSuppliedHash: `0x${string}` | undefined
+    try {
+      normalizedSuppliedHash = suppliedHash === undefined
+        ? undefined
+        : normalizeVerificationHash(suppliedHash)
+    } catch {
+      stopWithLocalError(run, 'The computed document fingerprint is invalid. Please try the file again.')
+      return
+    }
+    if (!isActiveRun(run)) return
     setIsVerifying(true)
     setVerifyStep(2)
+    const chainRecord = await readChain(run, docHash)
+    if (!isActiveRun(run) || !chainRecord) return
 
     try {
-      if (!publicClient) throw new Error('No chain connection')
-      if (!getTranscriptRegistry(chainId)) throw new Error('No chain connection')
-      setVerifyStep(3)
-
-      const { exists, revoked, issuer, studentId, program, issuedAt, txHash } =
-        await verifyOnChain(publicClient, chainId, docHash)
-
-      setIsVerifying(false)
-      setVerifyStep(0)
-
-      if (!exists) {
-        setResult('NOT_FOUND')
-        logVerification('NOT_FOUND', { docHash } as VerifyRecord, inputLabel)
-        return
-      }
-
+      const { exists, revoked, issuer, studentId, program, issuedAt, txHash } = chainRecord
+      const academicFields = authoritativeAcademicFields({ studentId, program })
       const rec: VerifyRecord = {
-        studentId: req?.student_id || studentId,
-        program: req?.program || program,
+        ...academicFields,
         issuerAddress: issuer,
         issuedAt,
-        txHash, fileName, docHash,
+        txHash, fileName, docHash: normalizedSuppliedHash ?? docHash,
         transcriptId: req?.request_id,
         studentName: req?.student_name,
         sourceInstitution: req?.source_institution,
       }
-
-      if (revoked) {
-        setResult('REVOKED')
-        setRecord(rec)
-        logVerification('REVOKED', rec, inputLabel)
-        return
-      }
-      setResult('VERIFIED')
-      setRecord(rec)
-      logVerification('VERIFIED', rec, inputLabel)
-
-    } catch (err) {
-      setIsVerifying(false)
-      setVerifyStep(0)
-      const parsed = parseReadError(err)
-      toast.error(parsed.title, { description: parsed.description })
-      setResult('CHAIN_ERROR')
+      const classification = classifyVerification({
+        exists,
+        revoked,
+        expectedHash: docHash,
+        suppliedHash: normalizedSuppliedHash,
+      })
+      finishVerification(run, classification, exists ? rec : null, normalizedSuppliedHash ?? docHash)
+    } catch {
+      stopWithLocalError(run, 'Verification could not be completed because the returned record was invalid.')
     }
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
       setUploadedFile(e.target.files[0])
-      setResult(null)
-      setRecord(null)
+      clearVerification()
     }
   }
 
@@ -221,7 +314,7 @@ export function VerifierDashboard() {
           {(['id', 'upload'] as const).map(tab => (
             <button
               key={tab}
-              onClick={() => { setActiveTab(tab); setResult(null); setRecord(null) }}
+              onClick={() => { setActiveTab(tab); clearVerification() }}
               className={`flex-1 py-3.5 text-sm font-medium transition-colors ${
                 activeTab === tab
                   ? 'text-blue-700 border-b-2 border-blue-600 bg-blue-50/40'
@@ -271,14 +364,14 @@ export function VerifierDashboard() {
                     type="file"
                     className="hidden"
                     accept=".pdf,.json"
-                    onChange={e => { setIdFile(e.target.files?.[0] ?? null); setResult(null); setRecord(null) }}
+                    onChange={e => { setIdFile(e.target.files?.[0] ?? null); clearVerification() }}
                   />
                 </label>
                 {idFile && (
                   <span className="inline-flex items-center gap-2 text-sm text-slate-700">
                     <FileText className="w-4 h-4 text-blue-500" />
                     {idFile.name}
-                    <button type="button" onClick={() => setIdFile(null)} className="text-slate-400 hover:text-red-600">
+                    <button type="button" onClick={() => { setIdFile(null); clearVerification() }} className="text-slate-400 hover:text-red-600">
                       <XCircle className="w-4 h-4" />
                     </button>
                   </span>
@@ -308,7 +401,7 @@ export function VerifierDashboard() {
                   <h3 className="text-lg font-medium text-slate-900 mb-1">{uploadedFile.name}</h3>
                   <p className="text-slate-500 text-sm mb-6">{(uploadedFile.size / 1024).toFixed(2)} KB</p>
                   <div className="flex justify-center gap-3">
-                    <button onClick={() => setUploadedFile(null)} className="px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors">
+                    <button onClick={() => { setUploadedFile(null); clearVerification() }} className="px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors">
                       Remove
                     </button>
                     <button
@@ -510,6 +603,25 @@ export function VerifierDashboard() {
           </motion.div>
         )}
       </AnimatePresence>
+      {result && auditStatus !== 'idle' && (
+        <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+          <span>
+            Audit log: {auditStatus === 'pending' ? 'saving…' : auditStatus === 'logged' ? 'saved' : 'save failed'}
+          </span>
+          {auditStatus === 'error' && auditPayload && (
+            <button
+              type="button"
+              className="font-medium text-blue-700 hover:text-blue-800"
+              onClick={() => {
+                setAuditStatus('pending')
+                runCoordinator.retryAudit(activeRunToken.current)
+              }}
+            >
+              Retry Audit Log
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

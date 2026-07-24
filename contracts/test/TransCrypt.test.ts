@@ -1,7 +1,130 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { sha256HexFromMetadata } from "../../shared/hash";
+import { writeAddressesFile } from "../../shared/sync-artifacts";
+import { LOCAL_SEED_INSTITUTIONS } from "../scripts/local-seed";
 import { InstitutionRegistry, TranscriptRegistry } from "../typechain-types";
+
+describe("local deployment metadata", function () {
+  it("keeps deterministic signer indices, institution names, and roles in output order", function () {
+    expect(LOCAL_SEED_INSTITUTIONS).to.deep.equal([
+      { signerIndex: 1, name: "Kabarak University", role: "Both" },
+      { signerIndex: 2, name: "Laikipia University", role: "Both" },
+      { signerIndex: 3, name: "Mount Kenya University", role: "Both" },
+      { signerIndex: 4, name: "Egerton University", role: "Both" },
+    ]);
+  });
+
+  it("maps deterministic Hardhat wallets to emitted seeded institution metadata", async function () {
+    const signers = await ethers.getSigners();
+    const expected = LOCAL_SEED_INSTITUTIONS.map((institution) => ({
+      wallet: signers[institution.signerIndex].address,
+      name: institution.name,
+      role: institution.role,
+    }));
+    const addressesPath = path.resolve(__dirname, "../../frontend/src/contracts/addresses.json");
+    const addresses = JSON.parse(fs.readFileSync(addressesPath, "utf8"));
+
+    expect(addresses["31337"].seededInstitutions).to.deep.equal(expected);
+  });
+
+  it("preserves other chains and atomically replaces the selected address entry", function () {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "transcrypt-addresses-"));
+    const addressesPath = path.join(directory, "addresses.json");
+    const existing = {
+      "80002": {
+        institutionRegistry: "0x1111111111111111111111111111111111111111",
+        transcriptRegistry: "0x2222222222222222222222222222222222222222",
+        network: "amoy",
+        deployedAt: "existing",
+      },
+    };
+    fs.writeFileSync(addressesPath, JSON.stringify(existing));
+
+    writeAddressesFile(addressesPath, 31337, {
+      institutionRegistry: "0x3333333333333333333333333333333333333333",
+      transcriptRegistry: "0x4444444444444444444444444444444444444444",
+      network: "localhost",
+      deployedAt: "new",
+    });
+
+    expect(JSON.parse(fs.readFileSync(addressesPath, "utf8"))).to.deep.equal({
+      ...existing,
+      "31337": {
+        institutionRegistry: "0x3333333333333333333333333333333333333333",
+        transcriptRegistry: "0x4444444444444444444444444444444444444444",
+        network: "localhost",
+        deployedAt: "new",
+      },
+    });
+    expect(fs.readdirSync(directory)).to.deep.equal(["addresses.json"]);
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("backs up malformed address JSON exactly and writes the active deployment", function () {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "transcrypt-corrupt-addresses-"));
+    const addressesPath = path.join(directory, "addresses.json");
+    const corrupt = '{"31337":{"institutionRegistry":"truncated"';
+    const warnings: string[] = [];
+    fs.writeFileSync(addressesPath, corrupt, "utf8");
+
+    const result = writeAddressesFile(addressesPath, 31337, {
+      institutionRegistry: "0x3333333333333333333333333333333333333333",
+      transcriptRegistry: "0x4444444444444444444444444444444444444444",
+      network: "localhost",
+      deployedAt: "new",
+    }, { now: () => 1234, warn: (message) => warnings.push(message) });
+
+    expect(result.corruptBackupPath).to.equal(`${addressesPath}.corrupt-1234.bak`);
+    expect(fs.readFileSync(result.corruptBackupPath!, "utf8")).to.equal(corrupt);
+    expect(JSON.parse(fs.readFileSync(addressesPath, "utf8"))["31337"].network).to.equal("localhost");
+    expect(warnings.join(" ")).to.contain(result.corruptBackupPath);
+    expect(fs.readdirSync(directory).some((name) => name.endsWith(".tmp"))).to.be.false;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("rolls back the exact original when atomic replacement fails", function () {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "transcrypt-rollback-addresses-"));
+    const addressesPath = path.join(directory, "addresses.json");
+    const original = '{"80002":{"network":"amoy"}}\n';
+    let renames = 0;
+    fs.writeFileSync(addressesPath, original, "utf8");
+
+    expect(() => writeAddressesFile(addressesPath, 31337, {
+      institutionRegistry: "0x3333333333333333333333333333333333333333",
+      transcriptRegistry: "0x4444444444444444444444444444444444444444",
+      network: "localhost",
+      deployedAt: "new",
+    }, {
+      renameSync: (from, to) => {
+        renames += 1;
+        if (renames === 2) throw new Error("simulated replace failure");
+        fs.renameSync(from, to);
+      },
+    })).to.throw("original restored");
+
+    expect(fs.readFileSync(addressesPath, "utf8")).to.equal(original);
+    expect(fs.readdirSync(directory)).to.deep.equal(["addresses.json"]);
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+});
+
+describe("generated contract artifacts", function () {
+  it("keeps the frontend TranscriptRegistry artifact identical to the compiled artifact", function () {
+    const compiledPath = path.resolve(__dirname, "../artifacts/contracts/TranscriptRegistry.sol/TranscriptRegistry.json");
+    const frontendPath = path.resolve(__dirname, "../../frontend/src/contracts/TranscriptRegistry.json");
+    const compiled = JSON.parse(fs.readFileSync(compiledPath, "utf8"));
+    const frontend = JSON.parse(fs.readFileSync(frontendPath, "utf8"));
+    const errorNames = compiled.abi.filter((entry: { type: string }) => entry.type === "error")
+      .map((entry: { name: string }) => entry.name);
+
+    expect(errorNames).to.include.members(["InvalidDocumentHash", "ZeroAddress"]);
+    expect(frontend).to.deep.equal(compiled);
+  });
+});
 
 describe("InstitutionRegistry", function () {
   let registry: InstitutionRegistry;
@@ -129,6 +252,28 @@ describe("TranscriptRegistry", function () {
     await expect(
       transcript.connect(other).issueTranscript(docHash, recipient.address, "CS/2019/001", "BSc Computer Science")
     ).to.be.revertedWithCustomError(transcript, "NotAnAuthorizedIssuer");
+  });
+
+  it("reverts when document hash is zero", async function () {
+    await expect(
+      transcript.connect(issuer).issueTranscript(
+        ethers.ZeroHash,
+        recipient.address,
+        "CS/2019/001",
+        "BSc Computer Science"
+      )
+    ).to.be.revertedWithCustomError(transcript, "InvalidDocumentHash");
+  });
+
+  it("reverts when recipient is zero", async function () {
+    await expect(
+      transcript.connect(issuer).issueTranscript(
+        docHash,
+        ethers.ZeroAddress,
+        "CS/2019/001",
+        "BSc Computer Science"
+      )
+    ).to.be.revertedWithCustomError(transcript, "ZeroAddress");
   });
 
   it("reverts on double issue", async function () {

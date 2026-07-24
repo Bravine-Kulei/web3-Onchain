@@ -53,7 +53,7 @@ export function WalletChip() {
     disconnect();
   };
 
-  if (!isConnected) {
+  if (!isConnected || !address) {
     return (
       <button
         onClick={handleConnect}
@@ -96,7 +96,7 @@ export function WalletChip() {
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
           <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
         </div>
-        <span className="font-mono text-slate-700 font-medium">{truncate(address!)}</span>
+        <span className="font-mono text-slate-700 font-medium">{truncate(address)}</span>
         <button onClick={handleCopy} className="p-1 hover:bg-slate-300 rounded text-slate-500 hover:text-slate-700 transition-colors" title="Copy address">
           <Copy className="w-3.5 h-3.5" />
         </button>

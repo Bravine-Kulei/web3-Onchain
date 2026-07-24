@@ -4,13 +4,15 @@ import { StatusBadge } from '../../components/common/StatusBadge';
 import { OnChainReference } from '../../components/common/OnChainReference';
 import { toast } from 'sonner';
 import { getVerifications, type VerificationRecord, type VerifyResultValue } from '../../lib/db';
+import { selectVerificationIdentifier } from '../../lib/verificationHistory';
 
-const RESULT_LABELS: Record<VerifyResultValue, 'Verified' | 'Tampered' | 'Revoked' | 'Not Found'> = {
+const RESULT_LABELS = {
   VERIFIED: 'Verified',
   TAMPERED: 'Tampered',
   REVOKED: 'Revoked',
   NOT_FOUND: 'Not Found',
-};
+  CHAIN_ERROR: 'Chain Error',
+} as const satisfies Record<VerifyResultValue, 'Verified' | 'Tampered' | 'Revoked' | 'Not Found' | 'Chain Error'>;
 
 export function VerificationHistory() {
   const [verifications, setVerifications] = useState<VerificationRecord[]>([]);
@@ -21,14 +23,15 @@ export function VerificationHistory() {
   useEffect(() => {
     getVerifications()
       .then(setVerifications)
+      .catch(() => toast.error('Could not load your verification history. Sign in and try again.'))
       .finally(() => setLoading(false));
   }, []);
 
   const filtered = verifications.filter(v => {
     const q = searchQuery.toLowerCase();
+    const identifier = selectVerificationIdentifier(v);
     const matchesSearch =
-      (v.transcript_input ?? '').toLowerCase().includes(q) ||
-      (v.request_id ?? '').toLowerCase().includes(q) ||
+      (identifier?.value ?? '').toLowerCase().includes(q) ||
       (v.student_name ?? '').toLowerCase().includes(q);
     const matchesResult = resultFilter ? RESULT_LABELS[v.result] === resultFilter : true;
     return matchesSearch && matchesResult;
@@ -39,16 +42,20 @@ export function VerificationHistory() {
       toast.error('Nothing to export');
       return;
     }
-    const header = ['Date', 'Transcript ID/Input', 'Student', 'Issuing Institution', 'Result', 'Doc Hash', 'Tx Hash'];
-    const rows = filtered.map(v => [
-      new Date(v.created_at).toISOString(),
-      v.request_id || v.transcript_input || '',
-      v.student_name || '',
-      v.source_institution || '',
-      RESULT_LABELS[v.result],
-      v.doc_hash || '',
-      v.tx_hash || '',
-    ]);
+    const header = ['Date', 'Identifier Type', 'Identifier', 'Student', 'Issuing Institution', 'Result', 'Doc Hash', 'Tx Hash'];
+    const rows = filtered.map(v => {
+      const identifier = selectVerificationIdentifier(v);
+      return [
+        new Date(v.created_at).toISOString(),
+        identifier?.label || '',
+        identifier?.value || '',
+        v.student_name || '',
+        v.source_institution || '',
+        RESULT_LABELS[v.result],
+        v.doc_hash || '',
+        v.tx_hash || '',
+      ];
+    });
     const csv = [header, ...rows]
       .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
       .join('\n');
@@ -111,7 +118,7 @@ export function VerificationHistory() {
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
               <tr>
                 <th className="px-6 py-4 font-medium">Date/Time</th>
-                <th className="px-6 py-4 font-medium">Transcript ID / Input</th>
+                <th className="px-6 py-4 font-medium">Safe Identifier</th>
                 <th className="px-6 py-4 font-medium">Issuing Institution</th>
                 <th className="px-6 py-4 font-medium">Student</th>
                 <th className="px-6 py-4 font-medium">Result</th>
@@ -126,13 +133,15 @@ export function VerificationHistory() {
                   </td>
                 </tr>
               ) : filtered.length > 0 ? (
-                filtered.map((v) => (
-                  <tr key={v.id} className="hover:bg-slate-50 transition-colors">
+                filtered.map((v) => {
+                  const identifier = selectVerificationIdentifier(v);
+                  return <tr key={v.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">
                       {new Date(v.created_at).toLocaleString()}
                     </td>
                     <td className="px-6 py-4 font-medium text-slate-900">
-                      {v.request_id || v.transcript_input || '-'}
+                      <span className="block text-xs text-slate-500">{identifier?.label ?? 'Unavailable'}</span>
+                      <span className="font-mono text-xs break-all">{identifier?.value ?? '-'}</span>
                     </td>
                     <td className="px-6 py-4 text-slate-600">
                       {v.source_institution || '-'}
@@ -150,8 +159,8 @@ export function VerificationHistory() {
                         <span className="text-slate-400">-</span>
                       )}
                     </td>
-                  </tr>
-                ))
+                  </tr>;
+                })
               ) : (
                 <tr>
                   <td colSpan={6} className="px-6 py-12 text-center text-slate-500">

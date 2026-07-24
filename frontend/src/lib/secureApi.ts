@@ -1,7 +1,7 @@
 import { isSupabaseConfigured, supabase } from './supabase'
 import { AUTH_BYPASS, edgeFetch } from './siweAuth'
 import { getSessionToken } from './siweSession'
-import type { TransferRequest, RequestStatus, VerificationRecord } from './db'
+import type { TransferRequest, RequestStatus, RequestUpdateResult, VerificationRecord } from './db'
 
 export class SecureWriteError extends Error {
   constructor(message: string, public readonly code: 'UNAUTHORIZED' | 'FORBIDDEN' | 'NETWORK' | 'UNKNOWN' = 'UNKNOWN') {
@@ -35,22 +35,84 @@ async function legacyUpdateRequestStatus(
   requestId: string,
   status: RequestStatus,
   extra?: Record<string, unknown>,
-): Promise<void> {
-  const historyEntry = { stage: status, timestamp: new Date().toISOString() }
-  const { error } = await supabase.rpc('append_request_history', {
+): Promise<RequestUpdateResult> {
+  const syncedAt = new Date().toISOString()
+  const historyEntry = { stage: status, timestamp: syncedAt }
+  const { data: current, error: currentError } = await supabase
+    .from('requests').select('status').eq('request_id', requestId).single()
+  if (currentError) throw new SecureWriteError(currentError.message)
+  if (current.status === status) return { requestId, status, syncedAt }
+  const { data, error } = await supabase.rpc('append_request_history', {
     p_request_id: requestId,
     p_status: status,
+    p_expected_status: current.status,
     p_history_entry: historyEntry,
-    ...extra,
+    p_tx_hash: extra?.tx_hash ?? null,
+    p_block_number: extra?.block_number ?? null,
+    p_document_hash: extra?.document_hash ?? null,
+    p_ipfs_cid: extra?.ipfs_cid ?? null,
+    p_issue_date: extra?.issue_date ?? null,
   })
   if (error) throw new SecureWriteError(error.message)
+  if (!data?.length) throw new SecureWriteError('Request changed while it was being updated')
+  return { requestId, status, syncedAt }
+}
+
+function normalizeUpdateResult(
+  response: unknown,
+  requestId: string,
+  status: RequestStatus,
+): RequestUpdateResult {
+  const allowedStatuses = new Set<RequestStatus>([
+    'Pending',
+    'Under Review',
+    'Approved',
+    'Anchored',
+    'Available',
+    'Verified',
+    'Revoked',
+    'Rejected',
+    'Tampered',
+  ])
+
+  let value = response
+  while (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>
+    const nested = record.data ?? record.result ?? record.updated ?? record.request
+    if (nested === undefined || nested === value) break
+    value = nested
+  }
+  if (Array.isArray(value)) value = value[0]
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new SecureWriteError('Malformed update response')
+  }
+
+  const row = value as Record<string, unknown>
+  const normalizedRequestId = row.requestId ?? row.request_id
+  const normalizedStatus = row.status
+  const normalizedSyncedAt = row.syncedAt ?? row.synced_at ?? row.updated_at
+  if (
+    typeof normalizedRequestId !== 'string' || !normalizedRequestId ||
+    normalizedRequestId !== requestId ||
+    typeof normalizedStatus !== 'string' || !allowedStatuses.has(normalizedStatus as RequestStatus) ||
+    normalizedStatus !== status ||
+    typeof normalizedSyncedAt !== 'string' || Number.isNaN(Date.parse(normalizedSyncedAt))
+  ) {
+    throw new SecureWriteError('Malformed update response')
+  }
+
+  return {
+    requestId: normalizedRequestId,
+    status: normalizedStatus as RequestStatus,
+    syncedAt: normalizedSyncedAt,
+  }
 }
 
 async function legacyRecordVerification(
   rec: Omit<VerificationRecord, 'id' | 'created_at'>,
 ): Promise<void> {
-  const { error } = await supabase.from('verifications').insert(rec)
-  if (error) console.warn('[legacy] recordVerification:', error.message)
+  const { error } = await supabase.from('verifications').upsert(rec, { onConflict: 'attempt_id', ignoreDuplicates: true })
+  if (error) throw new SecureWriteError(error.message)
 }
 
 export async function secureCreateRequest(
@@ -91,12 +153,13 @@ export async function secureUpdateRequestStatus(
     ipfs_cid?: string
     issue_date?: string
   },
-): Promise<void> {
-  if (!isSupabaseConfigured) return
+): Promise<RequestUpdateResult> {
+  if (!isSupabaseConfigured) {
+    return { requestId, status, syncedAt: new Date().toISOString() }
+  }
 
   if (AUTH_BYPASS) {
-    await legacyUpdateRequestStatus(requestId, status, extra)
-    return
+    return legacyUpdateRequestStatus(requestId, status, extra)
   }
 
   const session = getSessionToken()
@@ -105,11 +168,12 @@ export async function secureUpdateRequestStatus(
   }
 
   try {
-    await edgeFetch('update-request', {
+    const response = await edgeFetch<unknown>('update-request', {
       method: 'POST',
       session,
       body: JSON.stringify({ request_id: requestId, status, ...extra }),
     })
+    return normalizeUpdateResult(response, requestId, status)
   } catch (err) {
     throw classifyError(err)
   }
@@ -118,7 +182,7 @@ export async function secureUpdateRequestStatus(
 export async function secureRecordVerification(
   rec: Omit<VerificationRecord, 'id' | 'created_at'>,
 ): Promise<void> {
-  if (!isSupabaseConfigured) return
+  if (!isSupabaseConfigured) throw new SecureWriteError('Supabase not configured')
 
   if (AUTH_BYPASS) {
     await legacyRecordVerification(rec)
@@ -126,15 +190,18 @@ export async function secureRecordVerification(
   }
 
   const session = getSessionToken()
-  if (!session) return
+  if (!session) throw new SecureWriteError('Sign in with your wallet to record the audit log', 'UNAUTHORIZED')
 
   try {
-    await edgeFetch('record-verification', {
+    const response = await edgeFetch<{ ok?: boolean; attempt_id?: string }>('record-verification', {
       method: 'POST',
       session,
       body: JSON.stringify(rec),
     })
+    if (!response?.ok || response.attempt_id !== rec.attempt_id) {
+      throw new SecureWriteError('Malformed audit acknowledgement')
+    }
   } catch (err) {
-    console.warn('[secureApi] recordVerification:', err)
+    throw classifyError(err)
   }
 }

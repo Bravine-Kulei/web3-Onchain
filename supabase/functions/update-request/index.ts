@@ -1,9 +1,13 @@
-import { corsHeaders, jsonResponse, optionsResponse } from '../_shared/cors.ts'
+import { jsonResponse, optionsResponse } from '../_shared/cors.ts'
 import { adminClient } from '../_shared/supabase.ts'
 import { getSessionFromRequest, verifySessionToken } from '../_shared/session.ts'
-
-const ISSUER_STATUSES = new Set(['Under Review', 'Approved', 'Anchored', 'Available', 'Rejected', 'Revoked'])
-const STUDENT_STATUSES = new Set<string>() // students cannot update status directly
+import { canTransition, isSameState } from '../_shared/request-status.ts'
+import {
+  type RequestUpdatePayload,
+  updatedRowFromRpc,
+  validateAnchorRequirements,
+  validateUpdatePayload,
+} from '../_shared/request-update.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return optionsResponse()
@@ -15,24 +19,15 @@ Deno.serve(async (req) => {
     const wallet = await verifySessionToken(getSessionFromRequest(req), secret)
     if (!wallet) return jsonResponse({ error: 'Unauthorized — sign in with your wallet' }, 401)
 
-    const body = await req.json() as {
-      request_id: string
-      status: string
-      tx_hash?: string
-      block_number?: number
-      document_hash?: string
-      ipfs_cid?: string
-      issue_date?: string
-    }
-
-    if (!body.request_id || !body.status) {
-      return jsonResponse({ error: 'request_id and status required' }, 400)
-    }
+    const rawBody: unknown = await req.json()
+    const validationError = validateUpdatePayload(rawBody)
+    if (validationError) return jsonResponse({ error: validationError }, 400)
+    const body = rawBody as RequestUpdatePayload
 
     const db = adminClient()
     const { data: existing, error: fetchErr } = await db
       .from('requests')
-      .select('status, student_wallet, source_institution_address')
+      .select('request_id, status, updated_at, source_institution_address')
       .eq('request_id', body.request_id)
       .maybeSingle()
 
@@ -41,35 +36,25 @@ Deno.serve(async (req) => {
     }
 
     const sourceAddr = (existing.source_institution_address as string | null)?.toLowerCase()
-    const studentAddr = (existing.student_wallet as string | null)?.toLowerCase()
-
-    const isIssuerAction = ISSUER_STATUSES.has(body.status)
-    const isStudent = studentAddr === wallet
-
-    if (isIssuerAction) {
-      if (!sourceAddr || sourceAddr !== wallet) {
-        return jsonResponse({ error: 'Only the issuing institution wallet can update this request' }, 403)
-      }
-    } else if (STUDENT_STATUSES.has(body.status)) {
-      if (!isStudent) return jsonResponse({ error: 'Forbidden' }, 403)
-    } else {
-      return jsonResponse({ error: `Status transition to "${body.status}" not allowed` }, 400)
+    if (!sourceAddr || sourceAddr !== wallet) {
+      return jsonResponse({ error: 'Only the issuing institution wallet can update this request' }, 403)
     }
 
-    // Prevent re-processing terminal states
-    const terminal = new Set(['Anchored', 'Rejected', 'Revoked', 'Verified'])
-    if (terminal.has(existing.status as string) && body.status !== 'Revoked') {
-      if (existing.status === 'Anchored' && body.status === 'Revoked') {
-        // allow revoke after anchor
-      } else if (existing.status !== body.status) {
-        return jsonResponse({ error: `Request is already ${existing.status}` }, 409)
-      }
+    const currentStatus = existing.status as string
+    if (!canTransition(currentStatus, body.status)) {
+      return jsonResponse({ error: `Invalid status transition from "${currentStatus}" to "${body.status}"` }, 409)
     }
+    if (isSameState(currentStatus, body.status)) {
+      return jsonResponse({ data: existing, syncedAt: existing.updated_at })
+    }
+    const anchorRequirementError = validateAnchorRequirements(body)
+    if (anchorRequirementError) return jsonResponse({ error: anchorRequirementError }, 400)
 
     const historyEntry = { stage: body.status, timestamp: new Date().toISOString() }
-    const { error } = await db.rpc('append_request_history', {
+    const { data: updatedRows, error } = await db.rpc('append_request_history', {
       p_request_id: body.request_id,
       p_status: body.status,
+      p_expected_status: currentStatus,
       p_history_entry: historyEntry,
       p_tx_hash: body.tx_hash ?? null,
       p_block_number: body.block_number ?? null,
@@ -79,7 +64,10 @@ Deno.serve(async (req) => {
     })
 
     if (error) return jsonResponse({ error: error.message }, 500)
-    return jsonResponse({ ok: true })
+    const updated = updatedRowFromRpc(updatedRows)
+    if (!updated) return jsonResponse({ error: 'Request changed while it was being updated' }, 409)
+
+    return jsonResponse({ data: updated, syncedAt: updated.updated_at })
   } catch (err) {
     return jsonResponse({ error: err instanceof Error ? err.message : 'Internal error' }, 500)
   }

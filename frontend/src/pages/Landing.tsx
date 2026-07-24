@@ -47,12 +47,11 @@ export function Landing() {
           <span className="text-2xl font-bold tracking-tight">TransCrypt</span>
         </div>
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => handleComingSoon('About page')}
+          <Link
+            to="/setup"
             className="text-slate-600 font-medium hover:text-slate-900">
-            
-            About Consortium
-          </button>
+            Setup
+          </Link>
           <button
             onClick={() => isConnected ? disconnect() : connect({ connector: connectors[0] })}
             className="px-5 py-2.5 bg-blue-50 text-blue-700 rounded-lg font-medium hover:bg-blue-100 transition-colors active:scale-95">

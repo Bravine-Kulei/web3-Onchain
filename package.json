@@ -8,23 +8,36 @@
     "frontend"
   ],
   "scripts": {
-    "compile": "npm run compile --workspace=contracts",
-    "sync": "npm run compile && npm run sync --workspace=contracts",
-    "test": "npm run test --workspace=contracts",
-    "node": "npm run node --workspace=contracts",
-    "deploy:local": "cross-env SEED=true npm run deploy --workspace=contracts",
-    "deploy:amoy": "npm run deploy:amoy --workspace=contracts",
-    "dev:frontend": "npm run dev --workspace=frontend",
-    "dev:stack": "wait-on tcp:127.0.0.1:8545 && npm run deploy:local && npm run dev:frontend",
-    "dev": "concurrently -k -n chain,stack -c blue,green \"npm run node\" \"npm run dev:stack\"",
-    "build": "npm run compile && npm run build --workspace=frontend"
+    "compile": "pnpm --filter contracts compile",
+    "sync": "pnpm run compile && pnpm --filter contracts sync",
+    "test": "pnpm run test:contracts",
+    "test:contracts": "pnpm --filter contracts test",
+    "test:frontend": "pnpm --filter transcrypt-frontend test",
+    "test:backend": "node --test scripts/backend-migrations.test.mjs",
+    "typecheck": "pnpm --filter transcrypt-frontend typecheck",
+    "lint": "pnpm --filter transcrypt-frontend lint",
+    "node": "pnpm --filter contracts node",
+    "deploy:local": "cross-env SEED=true pnpm --filter contracts run deploy",
+    "deploy:amoy": "pnpm --filter contracts run deploy:amoy",
+    "dev:frontend": "pnpm --filter transcrypt-frontend dev",
+    "dev:stack": "wait-on tcp:127.0.0.1:8545 && pnpm run deploy:local && pnpm run dev:frontend",
+    "dev": "concurrently -k -n chain,stack -c blue,green \"pnpm run node\" \"pnpm run dev:stack\"",
+    "build": "pnpm run compile && pnpm --filter transcrypt-frontend build",
+    "verify": "pnpm run test:contracts && pnpm run test:frontend && pnpm run typecheck && pnpm run lint && pnpm run build",
+    "check:env": "node scripts/check-env.mjs",
+    "demo:check": "pnpm run check:env && pnpm run verify",
+    "demo:reset": "node scripts/demo-reset.mjs",
+    "deploy:functions": "supabase functions deploy",
+    "deploy:backend": "supabase functions deploy && supabase db push"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
+    "supabase": "^2.109.1",
     "wait-on": "^8.0.1"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "packageManager": "pnpm@11.0.9"
 }

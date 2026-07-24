@@ -1,6 +1,6 @@
 import { RequestStatus } from '../../data/mockData';
 interface StatusBadgeProps {
-  status: RequestStatus | 'Not Found';
+  status: RequestStatus | 'Not Found' | 'Chain Error';
   className?: string;
 }
 export function StatusBadge({ status, className = '' }: StatusBadgeProps) {
@@ -12,6 +12,7 @@ export function StatusBadge({ status, className = '' }: StatusBadgeProps) {
       case 'Tampered':
         return 'bg-red-100 text-red-800 border-red-200';
       case 'Rejected':
+      case 'Chain Error':
         return 'bg-rose-100 text-rose-800 border-rose-200';
       case 'Pending':
       case 'Under Review':
